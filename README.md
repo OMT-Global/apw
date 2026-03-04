@@ -83,6 +83,10 @@ _This is required every time the daemon starts i.e on boot_
 
 `apw auth`
 
+Logout when a machine is handed over:
+
+`apw auth logout`
+
 Query for available passwords (Interactive):
 
 `apw pw`
@@ -104,9 +108,22 @@ Options:
 Commands:
 
   auth   - Authenticate CLI with daemon.         
+  status - Show daemon and session status.
   pw     - Interactively list accounts/passwords.
   otp    - Interactively list accounts/OTPs.     
   start  - Start the daemon.
+
+Authentication/session status:
+
+- `apw status` shows daemon host/port and stored session metadata.
+- `apw status --json` returns machine-readable output.
+
+Security and storage:
+
+- Config data is stored in `~/.apw/config.json`.
+- `.apw` directory is created with mode `0700`.
+- `config.json` is written with mode `0600` and replaced atomically.
+- Invalid or stale config (including missing session values, malformed timestamps or schema drift) is cleared and requires re-authentication.
 ```
 
 <!-- CONTRIBUTING -->
@@ -123,6 +140,11 @@ To run the project whilst developing:
 ```
 deno run --allow-all src/cli.ts <OPTIONS>
 ```
+
+Daemon startup and CLI examples:
+
+- `apw start --bind 127.0.0.1 --port 10000`
+- `apw auth --pin 123456`
 
 ### Building a release version
 

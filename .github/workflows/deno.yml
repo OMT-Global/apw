@@ -24,6 +24,9 @@ jobs:
       - name: Verify linting
         run: deno lint
 
+      - name: Run tests
+        run: deno test --allow-read --allow-net --allow-env --allow-write
+
       - name: Build
         run: mkdir dist
           && deno compile --unstable-net --no-check --allow-all --target x86_64-apple-darwin --output dist/apw-x86_64-apple-darwin src/cli.ts

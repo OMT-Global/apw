@@ -10,9 +10,8 @@ import {
   toBufferSource,
 } from "./utils.ts";
 import { APWError, Status } from "./const.ts";
-import { SRPValues } from "./types.ts";
+import { PAKEMessage } from "./types.ts";
 
-// From https://www.rfc-editor.org/rfc/rfc5054#appendix-A
 const GROUP_PRIME = BigInt(
   "0x" +
     `
@@ -31,19 +30,96 @@ const GROUP_PRIME = BigInt(
       BBE11757 7A615D6C 770988C0 BAD946E2 08E24FA0 74E5AB31 43DB5BFC
       E0FD108E 4B82D120 A93AD2CA FFFFFFFF FFFFFFFF
     `.replaceAll(/[^0-9A-F]/g, ""),
-); // N
+);
 const GROUP_PRIME_BYTES = 3072 >> 3;
+const GROUP_GENERATOR = 5n;
 
-const GROUP_GENERATOR = 5n; // g
+export const PAKE_FIELD = {
+  TID: "TID" as const,
+  MSG: "MSG" as const,
+  A: "A" as const,
+  S: "s" as const,
+  B: "B" as const,
+  VER: "VER" as const,
+  PROTO: "PROTO" as const,
+  HAMK: "HAMK" as const,
+  ERR_CODE: "ErrCode" as const,
+} as const;
 
-// See https://www.rfc-editor.org/rfc/rfc2945
+const parseNumericToken = (value: unknown): number => {
+  if (Array.isArray(value)) {
+    return value.length > 0 ? parseNumericToken(value[0]) : Number.NaN;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && /^-?\d+$/.test(value)) {
+    return parseInt(value, 10);
+  }
+  return Number.NaN;
+};
+
+export const parsePakeMessageCode = (value: unknown): number =>
+  parseNumericToken(value);
+
+export const parsePakeMessageType = (value: unknown): number =>
+  parseNumericToken(value);
+
+export const isValidPakeMessage = (
+  candidate: unknown,
+): candidate is PAKEMessage => {
+  if (typeof candidate !== "object" || candidate === null) return false;
+  const message = candidate as PAKEMessage;
+
+  if (typeof message.TID !== "string") return false;
+  if (!Number.isInteger(parsePakeMessageType(message.MSG))) return false;
+  if (typeof message.A !== "string") return false;
+  if (typeof message.s !== "string") return false;
+  if (typeof message.B !== "string") return false;
+  if (!Number.isInteger(parsePakeMessageType(message.PROTO))) return false;
+
+  if (
+    message.VER !== undefined &&
+    (typeof message.VER !== "number" && typeof message.VER !== "string")
+  ) return false;
+  if (
+    message.HAMK !== undefined &&
+    typeof message.HAMK !== "string"
+  ) return false;
+  if (
+    message.ErrCode !== undefined &&
+    !Number.isInteger(parsePakeMessageCode(message.ErrCode))
+  ) return false;
+
+  return true;
+};
+
+const getMultiplier = async () =>
+  readBigInt(
+    await sha256(
+      Buffer.concat([
+        toBuffer(GROUP_PRIME),
+        pad(toBuffer(GROUP_GENERATOR), GROUP_PRIME_BYTES),
+      ]),
+    ),
+  );
+
+export interface SessionValues {
+  username?: string;
+  sharedKey?: bigint;
+  clientPrivateKey?: bigint;
+  salt?: bigint;
+  serverPublicKey?: bigint;
+}
+
 export class SRPSession {
   private shouldUseBase64: boolean;
-  public username: string; // I
-  private clientPrivateKey: bigint; // a
-  private serverPublicKey?: bigint; // B
-  private salt?: bigint; // s
-  private sharedKey?: bigint; // x
+  public username: string;
+  private clientPrivateKey: bigint;
+  private serverPublicKey?: bigint;
+  private salt?: bigint;
+  private sharedKey?: bigint;
 
   private constructor(
     username: Buffer,
@@ -52,34 +128,29 @@ export class SRPSession {
   ) {
     this.clientPrivateKey = clientPrivateKey;
     this.shouldUseBase64 = shouldUseBase64;
-
     this.username = this.serialize(username);
   }
 
-  updateWithValues(args: SRPValues) {
-    if (args.username) this.username = args.username;
-    if (args.sharedKey) this.sharedKey = args.sharedKey;
-    if (args.clientPrivateKey) this.clientPrivateKey = args.clientPrivateKey;
-    if (args.salt) this.salt = args.salt;
-    if (args.serverPublicKey) this.serverPublicKey = args.serverPublicKey;
+  updateWithValues(args: SessionValues) {
+    if (args.username !== undefined) this.username = args.username;
+    if (args.sharedKey !== undefined) this.sharedKey = args.sharedKey;
+    if (args.clientPrivateKey !== undefined) {
+      this.clientPrivateKey = args.clientPrivateKey;
+    }
+    if (args.salt !== undefined) this.salt = args.salt;
+    if (args.serverPublicKey !== undefined) {
+      this.serverPublicKey = args.serverPublicKey;
+    }
   }
 
-  returnValues(
-    args: {
-      username?: boolean;
-      sharedKey?: boolean;
-      clientPrivateKey?: boolean;
-      salt?: boolean;
-      serverPublicKey?: boolean;
-    },
-  ): SRPValues {
-    const ret: SRPValues = {};
-    if (args.username) ret.username = this.username;
-    if (args.sharedKey) ret.sharedKey = this.sharedKey;
-    if (args.clientPrivateKey) ret.clientPrivateKey = this.clientPrivateKey;
-    if (args.salt) ret.salt = this.salt;
-    if (args.serverPublicKey) ret.serverPublicKey = this.serverPublicKey;
-    return ret;
+  returnValues() {
+    return {
+      username: this.username,
+      sharedKey: this.sharedKey,
+      clientPrivateKey: this.clientPrivateKey,
+      salt: this.salt,
+      serverPublicKey: this.serverPublicKey,
+    };
   }
 
   static new(shouldUseBase64?: boolean) {
@@ -88,7 +159,6 @@ export class SRPSession {
     return new SRPSession(username, clientPrivateKey, shouldUseBase64);
   }
 
-  // A
   get clientPublicKey() {
     return powermod(GROUP_GENERATOR, this.clientPrivateKey, GROUP_PRIME);
   }
@@ -107,75 +177,78 @@ export class SRPSession {
 
   setServerPublicKey(serverPublicKey: bigint, salt: bigint) {
     if (mod(serverPublicKey, GROUP_PRIME) === 0n) {
-      throw new Error("Invalid server hello: invalid public key");
+      throw new APWError(
+        Status.INVALID_SESSION,
+        "Invalid server hello: invalid public key",
+      );
     }
 
     this.serverPublicKey = serverPublicKey;
     this.salt = salt;
   }
 
-  async setSharedKey(password: string) {
+  private deriveScramble() {
     if (this.serverPublicKey === undefined) {
       throw new APWError(
         Status.INVALID_SESSION,
         "Invalid session state: missing server public key",
       );
     }
-    if (this.salt === undefined) {
+
+    return sha256(
+      Buffer.concat([
+        pad(toBuffer(this.clientPublicKey), GROUP_PRIME_BYTES),
+        pad(toBuffer(this.serverPublicKey), GROUP_PRIME_BYTES),
+      ]),
+    );
+  }
+
+  private async deriveSessionKey(password: string) {
+    if (this.serverPublicKey === undefined || this.salt === undefined) {
       throw new APWError(
         Status.INVALID_SESSION,
-        "Invalid session state: missing salt",
+        "Invalid session state: missing server values",
       );
     }
 
-    const [publicKeysHash, multiplier, saltedPassword] = (
-      await Promise.all([
-        // u
-        sha256(
-          Buffer.concat([
-            pad(toBuffer(this.clientPublicKey), GROUP_PRIME_BYTES),
-            pad(toBuffer(this.serverPublicKey), GROUP_PRIME_BYTES),
-          ]),
-        ),
+    const usernamePasswordHash = await sha256(this.username + ":" + password);
+    const saltedPassword = await sha256(
+      Buffer.concat([toBuffer(this.salt), usernamePasswordHash]),
+    );
+    const [multiplier, scramble] = await Promise.all([
+      getMultiplier(),
+      this.deriveScramble(),
+    ]);
 
-        // k
-        sha256(
-          Buffer.concat([
-            toBuffer(GROUP_PRIME),
-            pad(toBuffer(GROUP_GENERATOR), GROUP_PRIME_BYTES),
-          ]),
-        ),
-
-        // x
-        sha256(this.username + ":" + password).then(async (hash) =>
-          await sha256(Buffer.concat([toBuffer(this.salt), hash]))
-        ),
-      ])
-    ).map(readBigInt);
-
-    // (B - (k * g^x)) ^ (a + (u * x)) % N
-    const premasterSecret = powermod(
+    const saltedPasswordInt = readBigInt(saltedPassword);
+    const u = readBigInt(scramble);
+    const sharedSecret = powermod(
       this.serverPublicKey -
-        multiplier * powermod(GROUP_GENERATOR, saltedPassword, GROUP_PRIME),
-      this.clientPrivateKey + publicKeysHash * saltedPassword,
+        multiplier * powermod(GROUP_GENERATOR, saltedPasswordInt, GROUP_PRIME),
+      this.clientPrivateKey + u * saltedPasswordInt,
       GROUP_PRIME,
     );
 
-    this.sharedKey = readBigInt(await sha256(premasterSecret));
+    return readBigInt(await sha256(sharedSecret));
+  }
+
+  async setSharedKey(password: string) {
+    if (this.serverPublicKey === undefined || this.salt === undefined) {
+      throw new APWError(
+        Status.INVALID_SESSION,
+        "Invalid session state: missing handshake values",
+      );
+    }
+
+    this.sharedKey = await this.deriveSessionKey(password);
     return this.sharedKey;
   }
 
   async computeM() {
-    if (this.serverPublicKey === undefined) {
+    if (this.serverPublicKey === undefined || this.salt === undefined) {
       throw new APWError(
         Status.INVALID_SESSION,
-        "Invalid session state: missing server public key",
-      );
-    }
-    if (this.salt === undefined) {
-      throw new APWError(
-        Status.INVALID_SESSION,
-        "Invalid session state: missing salt",
+        "Invalid session state: missing server key",
       );
     }
     if (this.sharedKey === undefined) {
@@ -185,20 +258,23 @@ export class SRPSession {
       );
     }
 
-    const [N, g, I] = await Promise.all([
+    const [N, g, I, u] = await Promise.all([
       sha256(GROUP_PRIME),
       sha256(pad(toBuffer(GROUP_GENERATOR), GROUP_PRIME_BYTES)),
       sha256(this.username),
+      this.deriveScramble(),
     ]);
 
-    return await sha256(
+    const NxorG = N.map((byte, i) => byte ^ g[i]);
+    return sha256(
       Buffer.concat([
-        N.map((byte, i) => byte ^ g[i]),
+        NxorG,
         I,
         toBuffer(this.salt),
         toBuffer(this.clientPublicKey),
         toBuffer(this.serverPublicKey),
         toBuffer(this.sharedKey),
+        toBuffer(u),
       ]),
     );
   }
@@ -207,7 +283,7 @@ export class SRPSession {
     if (this.sharedKey === undefined) {
       throw new APWError(
         Status.INVALID_SESSION,
-        "Invalid session state: missing shared key",
+        "Missing encryption key. Reauthenticate with `apw auth`.",
       );
     }
 
@@ -221,19 +297,17 @@ export class SRPSession {
   }
 
   async getEncryptionKey() {
-    if (this.sharedKey === undefined) return undefined;
+    if (this.sharedKey === undefined) {
+      return undefined;
+    }
 
     const key = toBuffer(this.sharedKey).subarray(0, 16);
-
     return await crypto.subtle.importKey(
       "raw",
       toBufferSource(key),
       "AES-GCM",
       true,
-      [
-        "encrypt",
-        "decrypt",
-      ],
+      ["encrypt", "decrypt"],
     );
   }
 
@@ -246,20 +320,14 @@ export class SRPSession {
       );
     }
 
-    const initializationVector = randomBytes(16);
-    return Buffer.concat([
-      Buffer.from(
-        await crypto.subtle.encrypt(
-          {
-            name: "AES-GCM",
-            iv: initializationVector,
-          },
-          encryptionKey,
-          toBufferSource(data),
-        ),
-      ),
-      initializationVector,
-    ]);
+    const iv = randomBytes(16);
+    const encrypted = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: toBufferSource(iv) },
+      encryptionKey,
+      toBufferSource(data),
+    );
+
+    return Buffer.concat([iv, Buffer.from(encrypted)]);
   }
 
   async decrypt(data: Buffer) {
@@ -271,16 +339,30 @@ export class SRPSession {
       );
     }
 
-    const initializationVector = data.subarray(0, 16);
-    return Buffer.from(
-      await crypto.subtle.decrypt(
-        {
-          name: "AES-GCM",
-          iv: toBufferSource(initializationVector),
-        },
+    const iv = data.subarray(0, 16);
+    try {
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: toBufferSource(iv) },
         encryptionKey,
         toBufferSource(data.subarray(16)),
-      ),
-    );
+      );
+      return Buffer.from(plain);
+    } catch {
+      throw new APWError(
+        Status.PROTO_INVALID_RESPONSE,
+        "Failed to decrypt helper response.",
+      );
+    }
+  }
+
+  verifyHAMK(expected: Buffer, actual: Buffer) {
+    if (expected.length !== actual.length || expected.length === 0) {
+      return false;
+    }
+    let difference = 0;
+    for (let i = 0; i < expected.length; i++) {
+      difference |= expected[i] ^ actual[i];
+    }
+    return difference === 0;
   }
 }

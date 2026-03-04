@@ -1,34 +1,62 @@
 // deno-lint-ignore-file no-explicit-any
 import { Buffer } from "./deps.ts";
-import { DATA_PATH } from "./const.ts";
-import { APWConfig } from "./types.ts";
+import { APWError, DATA_PATH, Status } from "./const.ts";
+import { APWConfig, APWConfigV1 } from "./types.ts";
+
+export const DEFAULT_HOST = "127.0.0.1";
+export const DEFAULT_PORT = 10_000;
+export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+const CONFIG_DIRECTORY_MODE = 0o700;
+const CONFIG_FILE_MODE = 0o600;
+const MAX_PORT = 65_535;
+const configPath = () => `${DATA_PATH()}/config.json`;
+const dataPath = () => DATA_PATH();
+
+export interface APWRuntimeConfig {
+  schema: 1;
+  port: number;
+  host: string;
+  username: string;
+  sharedKey: bigint;
+  createdAt: string;
+}
 
 export const toBuffer = (data: any): Buffer => {
-  if (Buffer.isBuffer(data)) return data;
-
-  switch (typeof data) {
-    case "number":
-      return toBuffer(BigInt(data));
-
-    case "bigint": {
-      const array = [];
-      while (data > 0n) {
-        array.unshift(Number(data & 0xffn));
-        data >>= 8n;
-      }
-      return Buffer.from(new Uint8Array(array));
-    }
-
-    case "string":
-      return Buffer.from(data, "utf8");
-
-    case "boolean":
-    case "symbol":
-    case "undefined":
-    case "object":
-    case "function":
-      return toBuffer(JSON.stringify(data));
+  if (Buffer.isBuffer(data)) {
+    return data;
   }
+
+  if (typeof data === "bigint") {
+    const array: number[] = [];
+    let remaining = data;
+    if (remaining === 0n) {
+      return Buffer.from([0x00]);
+    }
+    while (remaining > 0n) {
+      array.unshift(Number(remaining & 0xffn));
+      remaining >>= 8n;
+    }
+    return Buffer.from(array);
+  }
+
+  if (typeof data === "number") {
+    return toBuffer(BigInt(data));
+  }
+
+  if (typeof data === "string") {
+    return Buffer.from(data, "utf8");
+  }
+
+  if (typeof data === "boolean") {
+    return Buffer.from([data ? 1 : 0]);
+  }
+
+  if (data === undefined || data === null) {
+    return Buffer.from(String(data), "utf8");
+  }
+
+  return Buffer.from(JSON.stringify(data), "utf8");
 };
 
 export const toBufferSource = (data: any) => {
@@ -53,21 +81,30 @@ export const pad = (buffer: Buffer, length: number) => {
 
 export const mod = (A: bigint, N: bigint) => {
   A %= N;
-  if (A < 0) A += N;
+  if (A < 0n) A += N;
   return A;
 };
 
 export const powermod = (g: bigint, x: bigint, N: bigint): bigint => {
-  if (x < 0n) throw new Error("Unsupported negative exponents");
+  if (x < 0n) {
+    throw new Error("Unsupported negative exponents");
+  }
 
-  const _powermod = (x: bigint): bigint => {
-    if (x === 0n) return 1n;
-    let r = _powermod(x >> 1n) ** 2n;
-    if ((x & 1n) === 1n) r *= g;
-    return mod(r, N);
-  };
+  let base = mod(g, N);
+  let exp = x;
+  let result = 1n;
 
-  return _powermod(x);
+  while (exp > 0n) {
+    if ((exp & 1n) === 1n) {
+      result = mod(result * base, N);
+    }
+    exp >>= 1n;
+    if (exp > 0n) {
+      base = mod(base * base, N);
+    }
+  }
+
+  return mod(result, N);
 };
 
 export function randomBytes(count: number) {
@@ -76,55 +113,299 @@ export function randomBytes(count: number) {
   return Buffer.from(array);
 }
 
-export const clearConfig = async () => {
+const isValidPort = (value: unknown): value is number => {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 &&
+    value <= MAX_PORT;
+};
+
+const isV1Config = (input: unknown): input is APWConfigV1 => {
+  if (typeof input !== "object" || input === null) return false;
+  const candidate = input as APWConfigV1;
+  return candidate.schema === 1 &&
+    isValidPort(candidate.port) &&
+    typeof candidate.host === "string" &&
+    candidate.host.length > 0 &&
+    typeof candidate.username === "string" &&
+    typeof candidate.sharedKey === "string" &&
+    typeof candidate.createdAt === "string";
+};
+
+const isLegacyConfig = (input: unknown): input is APWConfig => {
+  if (typeof input !== "object" || input === null) return false;
+  const candidate = input as APWConfig;
+  return typeof candidate.username === "string" &&
+    typeof candidate.sharedKey === "string" &&
+    (candidate.port === undefined || isValidPort(candidate.port));
+};
+
+const toV1Config = (input: APWConfig): APWConfigV1 => ({
+  schema: 1,
+  port: input.port ?? DEFAULT_PORT,
+  host: DEFAULT_HOST,
+  username: input.username || "",
+  sharedKey: input.sharedKey || "",
+  createdAt: new Date().toISOString(),
+});
+
+const normalizeConfig = (input: unknown): APWConfigV1 => {
+  if (isV1Config(input)) {
+    return {
+      schema: 1,
+      port: input.port,
+      host: input.host || DEFAULT_HOST,
+      username: input.username,
+      sharedKey: input.sharedKey,
+      createdAt: input.createdAt,
+    };
+  }
+
+  if (isLegacyConfig(input)) {
+    return toV1Config(input);
+  }
+
+  throw new APWError(
+    Status.INVALID_CONFIG,
+    "Invalid config format. Run `apw auth` again.",
+  );
+};
+
+const ensureConfigDirectory = () => {
   try {
-    await Deno.remove(`${DATA_PATH}/config.json`);
-  } catch (_) {
+    const target = dataPath();
+    Deno.mkdirSync(target, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
+    const stat = Deno.statSync(target);
+    if (
+      stat.mode !== null && (stat.mode & 0o777) !== CONFIG_DIRECTORY_MODE
+    ) {
+      Deno.chmodSync(target, CONFIG_DIRECTORY_MODE);
+    }
+  } catch {
+    // Best effort: if permissions cannot be normalized, continue but enforce fail-closed
+    // behavior when writing config.
+  }
+};
+
+const writeAtomic = (path: string, content: string) => {
+  const tempPath = `${path}.${crypto.randomUUID()}.tmp`;
+  Deno.writeTextFileSync(tempPath, content, { mode: CONFIG_FILE_MODE });
+  Deno.renameSync(tempPath, path);
+  try {
+    Deno.chmodSync(path, CONFIG_FILE_MODE);
+  } catch {
+    // Ignore permission adjustment failures on constrained filesystems.
+  }
+};
+
+export const clearConfig = () => {
+  try {
+    Deno.removeSync(configPath());
+  } catch {
     return;
   }
 };
 
-export const writeConfig = (
-  { username, sharedKey, port }: {
-    username?: string;
-    sharedKey?: bigint;
-    port?: number;
-  },
-) => {
-  let existingConfig: APWConfig;
-  Deno.mkdirSync(DATA_PATH, { recursive: true });
+const readConfigFile = (): APWConfigV1 => {
+  let content: string;
+  const path = configPath();
   try {
-    existingConfig = JSON.parse(
-      Deno.readTextFileSync(`${DATA_PATH}/config.json`),
+    content = Deno.readTextFileSync(path);
+  } catch {
+    throw new APWError(
+      Status.INVALID_CONFIG,
+      `No config file at ${path}.`,
     );
-  } catch (_) {
-    existingConfig = { sharedKey: "", username: "" };
   }
-  const updatedConfig: APWConfig = {
-    ...existingConfig,
-    username: username || existingConfig.username,
-    sharedKey: sharedKey ? toBase64(sharedKey) : existingConfig.sharedKey,
-    port: port || existingConfig.port || 10000,
-  };
-  Deno.writeTextFileSync(
-    `${DATA_PATH}/config.json`,
-    JSON.stringify(updatedConfig),
-  );
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    clearConfig();
+    throw new APWError(
+      Status.INVALID_CONFIG,
+      "Config file contains invalid JSON.",
+    );
+  }
+
+  const normalized = normalizeConfig(parsed);
+  if (!normalized.sharedKey || !normalized.username) {
+    clearConfig();
+    throw new APWError(
+      Status.INVALID_CONFIG,
+      "Config file is missing required session values.",
+    );
+  }
+
+  return normalized;
 };
 
-export const readConfig = () => {
+const readBigIntOrThrow = (input?: string) => {
+  if (!input) return undefined;
+
   try {
-    const content = Deno.readTextFileSync(`${DATA_PATH}/config.json`);
-    const config: APWConfig = JSON.parse(content);
-    return {
-      sharedKey: config.sharedKey &&
-        readBigInt(Buffer.from(config.sharedKey, "base64")),
-      username: config.username,
-      port: config.port,
-    };
-  } catch (_) {
-    throw new Error(
-      "No existing keys. Please login first.",
+    return readBigInt(Buffer.from(input, "base64"));
+  } catch {
+    clearConfig();
+    throw new APWError(
+      Status.INVALID_CONFIG,
+      "Invalid config payload format. Run `apw auth` again.",
     );
   }
+};
+
+const expiredConfig = (createdAt: string, maxAgeMs: number) => {
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs)) return true;
+  if (createdAtMs > Date.now()) return true;
+  if (maxAgeMs <= 0) return false;
+  return Date.now() - createdAtMs > maxAgeMs;
+};
+
+const emptyRuntimeConfig = (): APWRuntimeConfig => ({
+  schema: 1,
+  port: DEFAULT_PORT,
+  host: DEFAULT_HOST,
+  username: "",
+  sharedKey: 0n,
+  createdAt: new Date(0).toISOString(),
+});
+
+export const readConfig = ({
+  requireAuth = false,
+  maxAgeMs = SESSION_MAX_AGE_MS,
+}: {
+  requireAuth?: boolean;
+  maxAgeMs?: number;
+} = {}): APWRuntimeConfig => {
+  let config: APWConfigV1;
+  try {
+    config = readConfigFile();
+  } catch (error) {
+    if (requireAuth) {
+      throw error instanceof APWError
+        ? error
+        : new APWError(Status.INVALID_CONFIG, "Failed to load config.");
+    }
+    return emptyRuntimeConfig();
+  }
+
+  const createdAtMs = Date.parse(config.createdAt);
+  if (!Number.isFinite(createdAtMs) || createdAtMs > Date.now()) {
+    if (requireAuth) {
+      clearConfig();
+      throw new APWError(
+        Status.INVALID_CONFIG,
+        "Stored credentials have an invalid timestamp.",
+      );
+    }
+    return emptyRuntimeConfig();
+  }
+
+  const sharedKey = readBigIntOrThrow(config.sharedKey);
+  if (!config.username || sharedKey === undefined || sharedKey === 0n) {
+    clearConfig();
+    if (requireAuth) {
+      throw new APWError(
+        Status.INVALID_SESSION,
+        "No active session. Run `apw auth` again.",
+      );
+    }
+    return emptyRuntimeConfig();
+  }
+
+  if (expiredConfig(config.createdAt, maxAgeMs)) {
+    clearConfig();
+    if (requireAuth) {
+      throw new APWError(
+        Status.INVALID_SESSION,
+        "Session expired. Run `apw auth` again.",
+      );
+    }
+    return {
+      ...emptyRuntimeConfig(),
+      port: config.port,
+      host: config.host || DEFAULT_HOST,
+      username: config.username,
+      sharedKey,
+      createdAt: config.createdAt,
+    };
+  }
+
+  return {
+    schema: 1,
+    port: config.port,
+    host: config.host || DEFAULT_HOST,
+    username: config.username,
+    sharedKey,
+    createdAt: config.createdAt,
+  };
+};
+
+export const readConfigOrNull = (): APWConfigV1 | null => {
+  try {
+    return readConfigFile();
+  } catch {
+    return null;
+  }
+};
+
+export const writeConfig = ({
+  username,
+  sharedKey,
+  port,
+  host,
+  allowEmpty = false,
+}: {
+  username?: string;
+  sharedKey?: bigint;
+  port?: number;
+  host?: string;
+  allowEmpty?: boolean;
+}) => {
+  ensureConfigDirectory();
+
+  if (
+    !allowEmpty &&
+    (typeof username !== "string" || username.length === 0 ||
+      typeof sharedKey !== "bigint" || sharedKey <= 0n)
+  ) {
+    throw new APWError(
+      Status.INVALID_CONFIG,
+      "Cannot persist incomplete config. Run `apw auth` first.",
+    );
+  }
+
+  const existing = readConfigOrNull();
+  const resolvedPort = isValidPort(port)
+    ? port
+    : existing?.port || DEFAULT_PORT;
+  const resolvedHost = host && host.trim().length > 0 ? host : existing?.host ||
+    DEFAULT_HOST;
+
+  if (!isValidPort(resolvedPort)) {
+    throw new APWError(Status.INVALID_CONFIG, "Invalid config port.");
+  }
+
+  if (!resolvedHost || resolvedHost.includes("\0")) {
+    throw new APWError(Status.INVALID_CONFIG, "Invalid config host.");
+  }
+
+  const updated: APWConfigV1 = {
+    schema: 1,
+    port: resolvedPort,
+    host: resolvedHost,
+    username: username || "",
+    sharedKey: sharedKey ? toBase64(sharedKey) : existing?.sharedKey || "",
+    createdAt: new Date().toISOString(),
+  };
+
+  if (!allowEmpty && (!updated.username || !updated.sharedKey)) {
+    throw new APWError(
+      Status.INVALID_CONFIG,
+      "Cannot persist incomplete config. Run `apw auth` first.",
+    );
+  }
+
+  writeAtomic(configPath(), JSON.stringify(updated));
+  return updated;
 };
