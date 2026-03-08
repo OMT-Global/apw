@@ -9,6 +9,7 @@ use std::future::Future;
 use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
+#[cfg(target_os = "macos")]
 use std::path::Path;
 use std::pin::Pin;
 #[cfg(unix)]
@@ -41,7 +42,7 @@ const BRIDGE_STATUS_ATTACHED: &str = "attached";
 const BRIDGE_STATUS_DISCONNECTED: &str = "disconnected";
 const BRIDGE_STATUS_ERROR: &str = "error";
 const BRIDGE_ATTACH_TIMEOUT_MS: u64 = 5_000;
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 const MANIFEST_PATHS: [&str; 2] = [
     "/Library/Application Support/Mozilla/NativeMessagingHosts/com.apple.passwordmanager.json",
     "/Library/Google/Chrome/NativeMessagingHosts/com.apple.passwordmanager.json",
@@ -685,7 +686,7 @@ async fn probe_helper_readiness(helper: &mut FramedHelper) -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn is_safe_manifest_path(path: &str) -> bool {
     MANIFEST_PATHS.contains(&path)
 }
@@ -695,7 +696,7 @@ fn is_absolute_unix_path(path: &str) -> bool {
     path.starts_with('/') && !path.contains('\0')
 }
 
-#[cfg(any(test, target_os = "macos"))]
+#[cfg(target_os = "macos")]
 fn is_executable(path: &str) -> bool {
     Path::new(path)
         .metadata()
