@@ -151,7 +151,7 @@ export const readFramedResponse = async (
   }
 };
 
-const parseFramedPayload = (payload: Buffer) => {
+export const parseFramedPayload = (payload: Buffer) => {
   if (payload.length > MAX_HELPER_PAYLOAD) {
     throw new APWError(Status.PROTO_INVALID_RESPONSE, "Response too large.");
   }
@@ -209,7 +209,7 @@ const withTimeout = <T>(ms: number, action: Promise<T>): Promise<T> =>
       });
   });
 
-const parseHelperResponse = (payload: unknown) => {
+export const parseHelperResponse = (payload: unknown) => {
   if (payload === null || typeof payload !== "object") {
     throw new APWError(
       Status.PROTO_INVALID_RESPONSE,

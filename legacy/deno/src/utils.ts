@@ -2,6 +2,13 @@
 import { Buffer } from "./deps.ts";
 import { APWError, DATA_PATH, Status } from "./const.ts";
 import { APWConfig, APWConfigV1 } from "./types.ts";
+import {
+  deleteSharedKey,
+  readSharedKey,
+  SecretSource,
+  supportsKeychain,
+  writeSharedKey,
+} from "./secrets.ts";
 
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 10_000;
@@ -12,6 +19,7 @@ const CONFIG_FILE_MODE = 0o600;
 const MAX_PORT = 65_535;
 const configPath = () => `${DATA_PATH()}/config.json`;
 const dataPath = () => DATA_PATH();
+const CURRENT_CONFIG_SCHEMA = 1 as const;
 
 export interface APWRuntimeConfig {
   schema: 1;
@@ -118,15 +126,34 @@ const isValidPort = (value: unknown): value is number => {
     value <= MAX_PORT;
 };
 
+const isSecretSource = (value: unknown): value is SecretSource =>
+  value === "file" || value === "keychain";
+
+const resolveSecretSource = (input: APWConfigV1): SecretSource => {
+  if (isSecretSource(input.secretSource)) {
+    return input.secretSource;
+  }
+
+  if (typeof input.sharedKey === "string" && input.sharedKey.length > 0) {
+    return "file";
+  }
+
+  return "keychain";
+};
+
 const isV1Config = (input: unknown): input is APWConfigV1 => {
   if (typeof input !== "object" || input === null) return false;
   const candidate = input as APWConfigV1;
-  return candidate.schema === 1 &&
+  const source = resolveSecretSource(candidate);
+  const hasFileSecret = typeof candidate.sharedKey === "string" && candidate
+        .sharedKey.length > 0;
+
+  return candidate.schema === CURRENT_CONFIG_SCHEMA &&
     isValidPort(candidate.port) &&
     typeof candidate.host === "string" &&
     candidate.host.length > 0 &&
     typeof candidate.username === "string" &&
-    typeof candidate.sharedKey === "string" &&
+    (source === "file" ? hasFileSecret : true) &&
     typeof candidate.createdAt === "string";
 };
 
@@ -139,22 +166,25 @@ const isLegacyConfig = (input: unknown): input is APWConfig => {
 };
 
 const toV1Config = (input: APWConfig): APWConfigV1 => ({
-  schema: 1,
+  schema: CURRENT_CONFIG_SCHEMA,
   port: input.port ?? DEFAULT_PORT,
   host: DEFAULT_HOST,
   username: input.username || "",
   sharedKey: input.sharedKey || "",
+  secretSource: input.sharedKey ? "file" : "keychain",
   createdAt: new Date().toISOString(),
 });
 
 const normalizeConfig = (input: unknown): APWConfigV1 => {
   if (isV1Config(input)) {
+    const source = resolveSecretSource(input);
     return {
-      schema: 1,
+      schema: CURRENT_CONFIG_SCHEMA,
       port: input.port,
       host: input.host || DEFAULT_HOST,
       username: input.username,
-      sharedKey: input.sharedKey,
+      sharedKey: source === "keychain" ? "" : input.sharedKey,
+      secretSource: source,
       createdAt: input.createdAt,
     };
   }
@@ -197,10 +227,32 @@ const writeAtomic = (path: string, content: string) => {
 };
 
 export const clearConfig = () => {
+  const existing = readConfigFileOrNull();
+  const username = existing?.username || "";
+  const source = existing?.secretSource || resolveSecretSource(
+    existing || ({} as APWConfigV1),
+  );
+
+  if (source === "keychain" && username) {
+    try {
+      deleteSharedKey(username);
+    } catch {
+      // Ignore keychain cleanup failures and continue with config file removal.
+    }
+  }
+
   try {
     Deno.removeSync(configPath());
   } catch {
     return;
+  }
+};
+
+const readConfigFileOrNull = (): APWConfigV1 | null => {
+  try {
+    return readConfigFile();
+  } catch {
+    return null;
   }
 };
 
@@ -228,13 +280,6 @@ const readConfigFile = (): APWConfigV1 => {
   }
 
   const normalized = normalizeConfig(parsed);
-  if (!normalized.sharedKey || !normalized.username) {
-    clearConfig();
-    throw new APWError(
-      Status.INVALID_CONFIG,
-      "Config file is missing required session values.",
-    );
-  }
 
   return normalized;
 };
@@ -270,6 +315,31 @@ const emptyRuntimeConfig = (): APWRuntimeConfig => ({
   createdAt: new Date(0).toISOString(),
 });
 
+const keychainAvailable = () => supportsKeychain();
+
+const resolveSharedKey = (
+  config: APWConfigV1,
+): { source: SecretSource; sharedKey?: string } => {
+  const source = resolveSecretSource(config);
+
+  if (source === "file") {
+    return { source, sharedKey: config.sharedKey };
+  }
+
+  if (!config.username) {
+    return { source, sharedKey: undefined };
+  }
+
+  const key = readSharedKey(config.username);
+  if (key) return { source, sharedKey: key };
+
+  if (typeof config.sharedKey === "string" && config.sharedKey.length > 0) {
+    return { source: "file", sharedKey: config.sharedKey };
+  }
+
+  return { source, sharedKey: undefined };
+};
+
 export const readConfig = ({
   requireAuth = false,
   maxAgeMs = SESSION_MAX_AGE_MS,
@@ -301,7 +371,30 @@ export const readConfig = ({
     return emptyRuntimeConfig();
   }
 
-  const sharedKey = readBigIntOrThrow(config.sharedKey);
+  let resolved: { source: SecretSource; sharedKey?: string };
+  try {
+    resolved = resolveSharedKey(config);
+  } catch (error) {
+    clearConfig();
+    if (requireAuth) {
+      throw error instanceof APWError
+        ? error
+        : new APWError(Status.INVALID_CONFIG, "Failed to load config.");
+    }
+    return emptyRuntimeConfig();
+  }
+
+  let sharedKey: bigint | undefined;
+  try {
+    sharedKey = readBigIntOrThrow(resolved.sharedKey);
+  } catch (error) {
+    clearConfig();
+    if (requireAuth) {
+      throw error;
+    }
+    return emptyRuntimeConfig();
+  }
+
   if (!config.username || sharedKey === undefined || sharedKey === 0n) {
     clearConfig();
     if (requireAuth) {
@@ -381,6 +474,7 @@ export const writeConfig = ({
     : existing?.port || DEFAULT_PORT;
   const resolvedHost = host && host.trim().length > 0 ? host : existing?.host ||
     DEFAULT_HOST;
+  const resolvedUsername = username ?? existing?.username ?? "";
 
   if (!isValidPort(resolvedPort)) {
     throw new APWError(Status.INVALID_CONFIG, "Invalid config port.");
@@ -390,16 +484,51 @@ export const writeConfig = ({
     throw new APWError(Status.INVALID_CONFIG, "Invalid config host.");
   }
 
+  const writeToKeychain = () =>
+    typeof resolvedUsername === "string" &&
+    resolvedUsername.length > 0 &&
+    typeof sharedKey === "bigint" &&
+    sharedKey > 0n &&
+    keychainAvailable();
+  const hasSessionSecret = typeof sharedKey === "bigint" && sharedKey > 0n &&
+    resolvedUsername.length > 0;
+
+  let secretSource: SecretSource = existing?.secretSource ?? "file";
+  let serializedKey = "";
+
+  if (!allowEmpty && hasSessionSecret) {
+    if (writeToKeychain()) {
+      writeSharedKey(resolvedUsername, toBase64(sharedKey));
+      secretSource = "keychain";
+      serializedKey = "";
+    } else {
+      secretSource = "file";
+      serializedKey = toBase64(sharedKey);
+    }
+  } else if (
+    secretSource === "keychain" && existing?.secretSource === "keychain"
+  ) {
+    serializedKey = "";
+  } else if (secretSource === "file" && existing?.sharedKey) {
+    serializedKey = existing.sharedKey;
+  }
+
   const updated: APWConfigV1 = {
-    schema: 1,
+    schema: CURRENT_CONFIG_SCHEMA,
     port: resolvedPort,
     host: resolvedHost,
-    username: username || "",
-    sharedKey: sharedKey ? toBase64(sharedKey) : existing?.sharedKey || "",
+    username: resolvedUsername,
+    sharedKey: serializedKey,
+    secretSource,
     createdAt: new Date().toISOString(),
   };
 
-  if (!allowEmpty && (!updated.username || !updated.sharedKey)) {
+  if (
+    !allowEmpty &&
+    (updated.username.length === 0 || (updated.secretSource === "file" &&
+      !updated.sharedKey) ||
+      (updated.secretSource === "keychain" && !keychainAvailable()))
+  ) {
     throw new APWError(
       Status.INVALID_CONFIG,
       "Cannot persist incomplete config. Run `apw auth` first.",

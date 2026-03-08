@@ -1,4 +1,5 @@
 import { Status } from "./const.ts";
+import type { SecretSource } from "./secrets.ts";
 
 export interface RenamedPasswordEntry {
   username: string;
@@ -86,7 +87,8 @@ export interface APWConfigV1 {
   port: number;
   host: string;
   username: string;
-  sharedKey: string;
+  sharedKey?: string;
+  secretSource?: SecretSource;
   createdAt: string;
 }
 

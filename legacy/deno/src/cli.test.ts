@@ -250,3 +250,31 @@ Deno.test("start command rejects invalid bind host", async () => {
     createCLI().parse(["start", "--bind", "bad host!", "--port", "5000"])
   );
 });
+
+Deno.test("start command validates numeric port", async () => {
+  await assertRejects(() =>
+    createCLI().parse(["start", "--bind", "127.0.0.1", "--port", "bad"])
+  );
+});
+
+Deno.test("auth command accepts --pin without prompting", async () => {
+  let receivedPin = "";
+  const restore = await withPatchedClient({
+    requestChallenge: () => Promise.resolve(),
+    verifyChallenge: (pin: string) => {
+      receivedPin = pin;
+      return Promise.resolve(true);
+    },
+  });
+
+  try {
+    await createCLI().parse([
+      "auth",
+      "--pin",
+      "012345",
+    ]);
+    assertEquals(receivedPin, "012345");
+  } finally {
+    restore();
+  }
+});

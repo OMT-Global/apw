@@ -1,4 +1,10 @@
-import { assert, assertEquals, assertRejects, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertInstanceOf,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
 
 import { Buffer, createSocket } from "./deps.ts";
 
@@ -310,28 +316,26 @@ Deno.test("requestChallenge and verifyChallenge complete session flow", async ()
         );
       }
 
-      const verification = await (async () => {
-        const incoming = client;
-        if (!incoming) {
-          throw new APWError(Status.GENERIC_ERROR, "client missing");
-        }
-        const expected = await incoming.session.computeHMAC(
-          incoming.session.deserialize(raw.M),
-        );
-        return {
-          PAKE: toBase64({
-            TID: raw.TID,
-            MSG: MSGTypes.SERVER_VERIFICATION,
-            A: "0x01",
-            s: "0x0200",
-            B: "0x0300",
-            PROTO: 1,
-            HAMK: incoming.session.serialize(expected),
-            ErrCode: 0,
-            VER: "1",
-          }),
-        };
-      })();
+      const incoming = client;
+      if (!incoming) {
+        throw new APWError(Status.GENERIC_ERROR, "client missing");
+      }
+      const expected = await incoming.session.computeHMAC(
+        incoming.session.deserialize(raw.M),
+      );
+      const verification = {
+        PAKE: toBase64({
+          TID: raw.TID,
+          MSG: MSGTypes.SERVER_VERIFICATION,
+          A: "0x01",
+          s: "0x0200",
+          B: "0x0300",
+          PROTO: 1,
+          HAMK: incoming.session.serialize(expected),
+          ErrCode: 0,
+          VER: "1",
+        }),
+      };
 
       return new TextEncoder().encode(
         JSON.stringify({
@@ -360,5 +364,197 @@ Deno.test("requestChallenge and verifyChallenge complete session flow", async ()
     assertEquals(cfg.sharedKey > 1n, true);
 
     await daemon.close();
+  });
+});
+
+Deno.test("requestChallenge rejects unsupported SRP protocol", async () => {
+  await withTmpHome(async () => {
+    const {
+      APWError,
+      MSGTypes,
+      Status,
+    } = await import("./const.ts");
+    const { toBase64 } = await import("./utils.ts");
+    const { ApplePasswordManager } = await import("./client.ts");
+
+    const daemon = startMockDaemon((message) => {
+      const parsed = JSON.parse(message);
+      const raw = JSON.parse(Buffer.from(parsed.msg.PAKE, "base64").toString());
+
+      if (raw.MSG !== MSGTypes.CLIENT_KEY_EXCHANGE) {
+        throw new APWError(Status.GENERIC_ERROR, "unexpected message");
+      }
+
+      return new TextEncoder().encode(
+        JSON.stringify({
+          ok: true,
+          code: Status.SUCCESS,
+          payload: {
+            PAKE: toBase64({
+              TID: raw.TID,
+              MSG: MSGTypes.SERVER_KEY_EXCHANGE,
+              A: "0x01",
+              s: "0x0200",
+              B: "0x0300",
+              PROTO: 0,
+              VER: "1",
+              ErrCode: 0,
+            }),
+          },
+        }),
+      );
+    });
+
+    const port = await daemon.port;
+    const { writeConfig } = await import("./utils.ts");
+    await writeConfig({
+      username: "alice",
+      sharedKey: 1n,
+      port,
+      host: "127.0.0.1",
+    });
+
+    const client = new ApplePasswordManager();
+    const error = await assertRejects(() => client.requestChallenge());
+    assertInstanceOf(error, APWError);
+    assertEquals(error.code, Status.SERVER_ERROR);
+
+    await daemon.close();
+  });
+});
+
+Deno.test("verifyChallenge handles pin verification failures from daemon", async () => {
+  await withTmpHome(async () => {
+    const {
+      APWError,
+      MSGTypes,
+      Status,
+    } = await import("./const.ts");
+    const { toBase64 } = await import("./utils.ts");
+    const { ApplePasswordManager } = await import("./client.ts");
+
+    const daemon = startMockDaemon((message) => {
+      const parsed = JSON.parse(message);
+      const raw = JSON.parse(Buffer.from(parsed.msg.PAKE, "base64").toString());
+
+      if (raw.MSG === MSGTypes.CLIENT_KEY_EXCHANGE) {
+        return new TextEncoder().encode(
+          JSON.stringify({
+            ok: true,
+            code: Status.SUCCESS,
+            payload: {
+              PAKE: toBase64({
+                TID: raw.TID,
+                MSG: MSGTypes.SERVER_KEY_EXCHANGE,
+                A: "0x01",
+                s: "0x0200",
+                B: "0x0300",
+                PROTO: 1,
+                VER: "1",
+                ErrCode: 0,
+              }),
+            },
+          }),
+        );
+      }
+
+      return new TextEncoder().encode(
+        JSON.stringify({
+          ok: true,
+          code: Status.SUCCESS,
+          payload: {
+            PAKE: toBase64({
+              TID: raw.TID,
+              MSG: MSGTypes.SERVER_VERIFICATION,
+              A: "0x01",
+              s: "0x0200",
+              B: "0x0300",
+              PROTO: 1,
+              HAMK: toBase64(Buffer.from([1, 2, 3, 4])),
+              ErrCode: 1,
+              VER: "1",
+            }),
+          },
+        }),
+      );
+    });
+
+    const port = await daemon.port;
+    const { writeConfig } = await import("./utils.ts");
+    await writeConfig({
+      username: "alice",
+      sharedKey: 1n,
+      port,
+      host: "127.0.0.1",
+    });
+
+    const client = new ApplePasswordManager();
+    await client.requestChallenge();
+    const error = await assertRejects(() => client.verifyChallenge("123456"));
+    assertInstanceOf(error, APWError);
+    assertEquals(error.code, Status.INVALID_SESSION);
+
+    await daemon.close();
+  });
+});
+
+Deno.test("status reports unauthenticated state without config", async () => {
+  await withTmpHome(async () => {
+    const { ApplePasswordManager } = await import("./client.ts");
+
+    const client = new ApplePasswordManager();
+    const status = client.status();
+
+    assertEquals(status.session.authenticated, false);
+    assertEquals(status.session.expired, true);
+    assertEquals(status.session.username, "");
+  });
+});
+
+Deno.test("status reports expired config state when createdAt is stale", async () => {
+  await withTmpHome(async () => {
+    const { writeConfig, SESSION_MAX_AGE_MS } = await import("./utils.ts");
+    const { ApplePasswordManager } = await import("./client.ts");
+
+    const sharedKey = 0x123456n;
+    await writeConfig({
+      username: "alice",
+      sharedKey,
+      port: 1234,
+      host: "127.0.0.1",
+    });
+
+    const configPath = `${Deno.env.get("HOME")}/.apw/config.json`;
+    const stale = JSON.parse(await Deno.readTextFile(configPath));
+    stale.createdAt = new Date(Date.now() - (SESSION_MAX_AGE_MS + 5000))
+      .toISOString();
+    await Deno.writeTextFile(configPath, JSON.stringify(stale));
+
+    const client = new ApplePasswordManager();
+    const status = client.status();
+
+    assertEquals(status.session.expired, true);
+    assertEquals(status.session.authenticated, false);
+  });
+});
+
+Deno.test("logout clears cached config and enforces reauth", async () => {
+  await withTmpHome(async () => {
+    const { APWError } = await import("./const.ts");
+    const { writeConfig } = await import("./utils.ts");
+    const { ApplePasswordManager } = await import("./client.ts");
+
+    await writeConfig({
+      username: "alice",
+      sharedKey: 0x123456n,
+      port: 1234,
+      host: "127.0.0.1",
+    });
+
+    const client = new ApplePasswordManager();
+    client.ensureAuthenticated();
+    await client.logout();
+
+    assertThrows(() => client.ensureAuthenticated(), APWError);
   });
 });

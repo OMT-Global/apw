@@ -21,7 +21,17 @@ Deno.test("describeStatus returns readable strings for known and unknown status"
   assertEquals(describeStatus(999), "A generic error occurred");
 });
 
+Deno.test("status helper methods map unknown with fallback and new edge codes", () => {
+  assertEquals(describeStatus(Status.SUCCESS), "Operation successful");
+  assertEquals(
+    statusText(Status.COMMUNICATION_TIMEOUT),
+    "Communication timeout",
+  );
+  assertEquals(describeStatus(-1), "Unknown status");
+  assertEquals(statusText(-1, "generic"), "generic");
+});
+
 Deno.test("statusText returns fallback when unknown and mapped text otherwise", () => {
-  assertEquals(statusText(Status.SUCCESS), "Operation successful");
+  assertEquals(describeStatus(Status.SUCCESS), "Operation successful");
   assertEquals(statusText(999, "fallback"), "A generic error occurred");
 });

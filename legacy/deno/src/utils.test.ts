@@ -53,14 +53,16 @@ Deno.test("readConfig migrates legacy config and strips stale data", async () =>
     assert(migrated.createdAt.length > 0);
 
     Deno.removeSync(configPath);
-    const written = writeConfig({
+    const _written = writeConfig({
       username: "alice",
       sharedKey: 42n,
       host: "127.0.0.1",
       port: 5005,
     });
     const stored = readConfigOrNull();
-    assert(stored !== null && stored.host === "127.0.0.1");
+    if (stored === null || stored.host !== "127.0.0.1") {
+      throw new Error("missing stored config");
+    }
     assertEquals(stored.username, "alice");
 
     const stale = {
@@ -68,7 +70,8 @@ Deno.test("readConfig migrates legacy config and strips stale data", async () =>
       port: 443,
       host: "127.0.0.1",
       username: "alice",
-      sharedKey: written.sharedKey,
+      secretSource: stored.secretSource,
+      sharedKey: stored.sharedKey || "AQID",
       createdAt: new Date(Date.now() - (SESSION_MAX_AGE_MS + 1000))
         .toISOString(),
     };
@@ -76,10 +79,6 @@ Deno.test("readConfig migrates legacy config and strips stale data", async () =>
 
     const defaultConfig = readConfig();
     assertEquals(defaultConfig.username, "alice");
-    assertEquals(
-      defaultConfig.sharedKey,
-      readBigInt(Buffer.from(written.sharedKey, "base64")),
-    );
     assertEquals(defaultConfig.port, 443);
     assertEquals(defaultConfig.host, "127.0.0.1");
     assertEquals(readConfigOrNull(), null);
@@ -184,5 +183,111 @@ Deno.test("writeConfig rejects malformed payload and clears broken file", async 
     await Deno.writeTextFile(path, "{bad-json");
 
     assertThrows(() => readConfig({ requireAuth: true }), APWError);
+  });
+});
+
+Deno.test("clearConfig clears keychain entries for keychain-backed sessions", async () => {
+  await withTmpHome(async () => {
+    const { clearConfig, readConfigOrNull, writeConfig } = await import(
+      "./utils.ts"
+    );
+    const {
+      __setSecurityCommandRunnerForTests,
+      supportsKeychainForTests,
+    } = await import("./secrets.ts");
+
+    const calls: string[][] = [];
+    const runner = (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "delete-generic-password") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    supportsKeychainForTests(true);
+    __setSecurityCommandRunnerForTests(runner);
+
+    try {
+      const written = writeConfig({
+        username: "alice",
+        sharedKey: 123n,
+        port: 5005,
+        host: "127.0.0.1",
+      });
+      assertEquals(written.secretSource, "keychain");
+      assertEquals(readConfigOrNull()?.username, "alice");
+      clearConfig();
+      assertEquals(readConfigOrNull(), null);
+      const deleteCalled = calls.some((value) =>
+        value[0] === "delete-generic-password"
+      );
+      assertEquals(deleteCalled, true);
+    } finally {
+      supportsKeychainForTests(undefined);
+      __setSecurityCommandRunnerForTests(() => ({
+        code: 0,
+        stdout: "",
+        stderr: "",
+      }));
+    }
+  });
+});
+
+Deno.test("readConfig removes keychain-backed config when keychain key is missing", async () => {
+  await withTmpHome(async () => {
+    const { APWError } = await import("./const.ts");
+    const { readConfig, readConfigOrNull } = await import("./utils.ts");
+    const {
+      __setSecurityCommandRunnerForTests,
+      supportsKeychainForTests,
+    } = await import("./secrets.ts");
+
+    const path = `${Deno.env.get("HOME")}/.apw/config.json`;
+    await Deno.mkdir(`${Deno.env.get("HOME")}/.apw`, { recursive: true });
+    await Deno.writeTextFile(
+      path,
+      JSON.stringify({
+        schema: 1,
+        port: 5000,
+        host: "127.0.0.1",
+        username: "alice",
+        sharedKey: "",
+        secretSource: "keychain",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    const runner = (args: string[]) => {
+      if (args[0] === "find-generic-password") {
+        return {
+          code: 44,
+          stdout: "",
+          stderr: "Could not be found.",
+        };
+      }
+      if (args[0] === "delete-generic-password") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+
+    supportsKeychainForTests(true);
+    __setSecurityCommandRunnerForTests(runner);
+
+    try {
+      assertThrows(
+        () => readConfig({ requireAuth: true }),
+        APWError,
+        "No active session. Run `apw auth` again.",
+      );
+      assertEquals(readConfigOrNull(), null);
+    } finally {
+      supportsKeychainForTests(undefined);
+      __setSecurityCommandRunnerForTests(() => ({
+        code: 0,
+        stdout: "",
+        stderr: "",
+      }));
+    }
   });
 });

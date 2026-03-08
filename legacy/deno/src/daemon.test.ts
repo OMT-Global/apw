@@ -1,6 +1,12 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
+import { Buffer } from "node:buffer";
 
-import { readFramedResponse } from "./daemon.ts";
+import { APWError, Status } from "./const.ts";
+import {
+  parseFramedPayload,
+  parseHelperResponse,
+  readFramedResponse,
+} from "./daemon.ts";
 
 const makeStream = (chunks: Uint8Array[]) =>
   new ReadableStream({
@@ -64,4 +70,55 @@ Deno.test("readFramedResponse accepts chunked framing", async () => {
   const reader = makeStream(chunks).getReader();
   const output = await readFramedResponse(reader);
   assertEquals(output.toString("utf8"), payload);
+});
+
+Deno.test("parseFramedPayload validates JSON decoding", () => {
+  const value = JSON.stringify({ ok: true, payload: { value: "ok" } });
+  const output = parseFramedPayload(Buffer.from(value));
+  assertEquals((output as { payload: { value: string } }).payload.value, "ok");
+});
+
+Deno.test("parseFramedPayload rejects malformed helper JSON", () => {
+  assertThrows(
+    () => parseFramedPayload(Buffer.from("{bad-json")),
+    APWError,
+    "Invalid helper response JSON.",
+  );
+});
+
+Deno.test("parseFramedPayload rejects non-object payload", () => {
+  assertThrows(
+    () => parseFramedPayload(Buffer.from(JSON.stringify("bad"))),
+    APWError,
+    "Invalid helper response payload.",
+  );
+});
+
+Deno.test("parseHelperResponse returns payload for successful envelopes", () => {
+  const payload = parseHelperResponse({
+    ok: true,
+    code: Status.SUCCESS,
+    payload: { state: "ready" },
+  });
+  assertEquals((payload as { state: string }).state, "ready");
+});
+
+Deno.test("parseHelperResponse accepts legacy payload without explicit ok flag", () => {
+  const legacy = { STATUS: Status.SUCCESS, Entries: [] };
+  const payload = parseHelperResponse(legacy);
+  assertEquals(payload, legacy);
+});
+
+Deno.test("parseHelperResponse converts helper errors to APWError", () => {
+  assertThrows(
+    () => {
+      parseHelperResponse({
+        ok: false,
+        code: Status.INVALID_SESSION,
+        error: "expired",
+      });
+    },
+    APWError,
+    "expired",
+  );
 });

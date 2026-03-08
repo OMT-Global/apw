@@ -355,14 +355,28 @@ export class SRPSession {
     }
   }
 
+  private static verifyConstantTime(expected: Buffer, actual: Buffer) {
+    const maxLength = Math.max(expected.length, actual.length);
+    let diff = 0;
+
+    for (let index = 0; index < maxLength; index++) {
+      const expectedByte = index < expected.length ? expected[index] : 0;
+      const actualByte = index < actual.length ? actual[index] : 0;
+      diff |= expectedByte ^ actualByte;
+    }
+
+    if (expected.length !== actual.length) {
+      diff |= 1;
+    }
+
+    return diff === 0;
+  }
+
   verifyHAMK(expected: Buffer, actual: Buffer) {
-    if (expected.length !== actual.length || expected.length === 0) {
+    if (expected.length === 0 || actual.length === 0) {
       return false;
     }
-    let difference = 0;
-    for (let i = 0; i < expected.length; i++) {
-      difference |= expected[i] ^ actual[i];
-    }
-    return difference === 0;
+
+    return SRPSession.verifyConstantTime(expected, actual);
   }
 }
