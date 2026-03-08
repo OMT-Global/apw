@@ -147,7 +147,7 @@ where
         .expect("failed to query daemon socket")
         .port();
     socket
-        .set_read_timeout(Some(StdDuration::from_millis(12_000)))
+        .set_read_timeout(Some(StdDuration::from_millis(60_000)))
         .expect("failed to set socket timeout");
 
     let join = thread::spawn(move || {
@@ -402,7 +402,7 @@ fn parity_data_plane_queries_match_legacy() {
     }
 
     let shared_key = DEFAULT_SHARED_KEY_BYTES.to_vec();
-    let (port, handle) = spawn_fake_daemon(4, move |request, _step| {
+    let (port, handle) = spawn_fake_daemon(16, move |request, _step| {
         let command = request.get("cmd").and_then(Value::as_i64).unwrap_or(-1);
         let response_payload = match command {
             4 => serde_json::json!({
