@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
 use std::io::ErrorKind;
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
