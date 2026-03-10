@@ -719,6 +719,44 @@ mod tests {
     }
 
     #[test]
+    fn host_install_command_parses() {
+        let parsed = Cli::try_parse_from(["apw", "host", "install"]).unwrap();
+        match parsed.command {
+            Commands::Host(host) => match host.command {
+                HostSubcommand::Install => {}
+                _ => panic!("expected host install command"),
+            },
+            _ => panic!("expected host command"),
+        }
+    }
+
+    #[test]
+    fn host_doctor_command_accepts_json_flag() {
+        let parsed = Cli::try_parse_from(["apw", "host", "doctor", "--json"]).unwrap();
+        match parsed.command {
+            Commands::Host(host) => match host.command {
+                HostSubcommand::Doctor(options) => {
+                    assert!(options.json);
+                }
+                _ => panic!("expected host doctor command"),
+            },
+            _ => panic!("expected host command"),
+        }
+    }
+
+    #[test]
+    fn host_uninstall_command_parses() {
+        let parsed = Cli::try_parse_from(["apw", "host", "uninstall"]).unwrap();
+        match parsed.command {
+            Commands::Host(host) => match host.command {
+                HostSubcommand::Uninstall => {}
+                _ => panic!("expected host uninstall command"),
+            },
+            _ => panic!("expected host command"),
+        }
+    }
+
+    #[test]
     fn print_entries_rejects_errors() {
         let payload = Payload {
             status: Status::NoResults,

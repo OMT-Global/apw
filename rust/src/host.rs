@@ -23,6 +23,15 @@ fn set_permissions(path: &Path, mode: u32) {
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
 }
 
+fn native_host_supported_platform() -> bool {
+    #[cfg(test)]
+    if let Some(value) = test_support::supported_platform_override() {
+        return value;
+    }
+
+    cfg!(target_os = "macos")
+}
+
 pub fn native_host_run_dir() -> PathBuf {
     home_dir().join(".apw").join("run")
 }
@@ -94,6 +103,11 @@ fn launchctl_service_target() -> String {
 }
 
 fn run_launchctl(args: &[&str], allow_failure: bool) -> Result<String> {
+    #[cfg(test)]
+    if let Some(result) = test_support::run_launchctl(args, allow_failure) {
+        return result;
+    }
+
     let output = Command::new("/bin/launchctl")
         .args(args)
         .output()
@@ -122,6 +136,11 @@ fn run_launchctl(args: &[&str], allow_failure: bool) -> Result<String> {
 }
 
 fn launch_agent_loaded() -> bool {
+    #[cfg(test)]
+    if let Some(value) = test_support::launch_agent_loaded_override() {
+        return value;
+    }
+
     Command::new("/bin/launchctl")
         .args(["print", &launchctl_service_target()])
         .output()
@@ -142,13 +161,23 @@ fn read_bundle_version(bundle_path: &Path) -> Option<String> {
 }
 
 fn helper_executable() -> bool {
+    #[cfg(test)]
+    if let Some(value) = test_support::helper_executable_override() {
+        return value;
+    }
+
     fs::metadata(native_host_helper_path())
         .map(|metadata| metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0))
         .unwrap_or(false)
 }
 
 fn native_host_macos_major_version() -> Option<u32> {
-    if !cfg!(target_os = "macos") {
+    #[cfg(test)]
+    if let Some(value) = test_support::macos_major_version_override() {
+        return Some(value);
+    }
+
+    if !native_host_supported_platform() {
         return None;
     }
 
@@ -214,6 +243,11 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn resolve_packaged_native_host_bundle() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = test_support::packaged_bundle_override() {
+        return Ok(path);
+    }
+
     let current_exe = env::current_exe().map_err(|error| {
         APWError::new(
             Status::InvalidConfig,
@@ -297,7 +331,7 @@ fn build_launch_agent_plist(bundle_path: &Path, socket_path: &Path) -> String {
 }
 
 fn native_host_preflight_state() -> (String, Option<String>, Option<String>) {
-    if !cfg!(target_os = "macos") {
+    if !native_host_supported_platform() {
         return (
             "unsupported_platform".to_string(),
             Some("APW native host is supported only on macOS.".to_string()),
@@ -355,7 +389,7 @@ pub fn native_host_preflight_status(configured_mode: RuntimeMode) -> Value {
     let (status, error, bundle_version) = native_host_preflight_state();
 
     json!({
-        "supported": cfg!(target_os = "macos"),
+        "supported": native_host_supported_platform(),
         "platform": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -422,7 +456,7 @@ pub fn native_host_doctor() -> Result<Value> {
 }
 
 pub fn native_host_install() -> Result<Value> {
-    if !cfg!(target_os = "macos") {
+    if !native_host_supported_platform() {
         return Err(APWError::new(
             Status::ProcessNotRunning,
             "APW native host is supported only on macOS.",
@@ -480,7 +514,7 @@ pub fn native_host_install() -> Result<Value> {
 }
 
 pub fn native_host_uninstall() -> Result<Value> {
-    if !cfg!(target_os = "macos") {
+    if !native_host_supported_platform() {
         return Err(APWError::new(
             Status::ProcessNotRunning,
             "APW native host is supported only on macOS.",
@@ -512,4 +546,270 @@ pub fn native_host_uninstall() -> Result<Value> {
             "socket": socket_path,
         }
     }))
+}
+
+#[cfg(test)]
+mod test_support {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    #[derive(Clone, Default)]
+    pub struct State {
+        pub supported_platform: Option<bool>,
+        pub packaged_bundle: Option<PathBuf>,
+        pub launch_agent_loaded: Option<bool>,
+        pub helper_executable: Option<bool>,
+        pub macos_major_version: Option<u32>,
+        pub stub_launchctl: bool,
+        pub launchctl_error: Option<String>,
+        pub launchctl_calls: Vec<Vec<String>>,
+    }
+
+    static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+
+    fn state() -> &'static Mutex<State> {
+        STATE.get_or_init(|| Mutex::new(State::default()))
+    }
+
+    pub fn replace(new_state: State) {
+        *state().lock().unwrap() = new_state;
+    }
+
+    pub fn reset() {
+        replace(State::default());
+    }
+
+    pub fn supported_platform_override() -> Option<bool> {
+        state().lock().unwrap().supported_platform
+    }
+
+    pub fn packaged_bundle_override() -> Option<PathBuf> {
+        state().lock().unwrap().packaged_bundle.clone()
+    }
+
+    pub fn launch_agent_loaded_override() -> Option<bool> {
+        state().lock().unwrap().launch_agent_loaded
+    }
+
+    pub fn helper_executable_override() -> Option<bool> {
+        state().lock().unwrap().helper_executable
+    }
+
+    pub fn macos_major_version_override() -> Option<u32> {
+        state().lock().unwrap().macos_major_version
+    }
+
+    pub fn launchctl_calls() -> Vec<Vec<String>> {
+        state().lock().unwrap().launchctl_calls.clone()
+    }
+
+    pub fn run_launchctl(args: &[&str], allow_failure: bool) -> Option<Result<String>> {
+        let mut guard = state().lock().unwrap();
+        if !guard.stub_launchctl {
+            return None;
+        }
+
+        guard
+            .launchctl_calls
+            .push(args.iter().map(|value| value.to_string()).collect());
+
+        if let Some(error) = guard.launchctl_error.clone() {
+            if allow_failure {
+                return Some(Ok(error));
+            }
+            return Some(Err(APWError::new(Status::ProcessNotRunning, error)));
+        }
+
+        Some(Ok(String::new()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    static TEST_HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_temp_home<F, R>(run: F) -> R
+    where
+        F: FnOnce(&Path) -> R,
+    {
+        let _guard = TEST_HOME_LOCK.lock().unwrap();
+        let temp = tempdir().unwrap();
+        let previous_home = env::var("HOME").ok();
+
+        unsafe {
+            env::set_var("HOME", temp.path());
+        }
+        test_support::reset();
+
+        let result = run(temp.path());
+
+        test_support::reset();
+        if let Some(value) = previous_home {
+            unsafe {
+                env::set_var("HOME", value);
+            }
+        } else {
+            unsafe {
+                env::remove_var("HOME");
+            }
+        }
+
+        result
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    fn make_fake_bundle(root: &Path) -> PathBuf {
+        let bundle = root.join("packaged").join(NATIVE_HOST_BUNDLE_NAME);
+        let executable = native_host_executable_in_bundle(&bundle);
+        write_file(
+            &bundle.join("Contents").join("Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleShortVersionString</key>
+  <string>1.2.0</string>
+</dict>
+</plist>
+"#,
+        );
+        write_file(&executable, "#!/bin/sh\nexit 0\n");
+        set_permissions(&executable, 0o755);
+        bundle
+    }
+
+    #[test]
+    #[serial]
+    fn native_host_doctor_reports_unsupported_platform() {
+        with_temp_home(|_| {
+            test_support::replace(test_support::State {
+                supported_platform: Some(false),
+                ..Default::default()
+            });
+
+            let payload = native_host_doctor().unwrap();
+            assert_eq!(payload["status"], "unsupported_platform");
+            assert_eq!(
+                payload["error"],
+                "APW native host is supported only on macOS."
+            );
+            assert_eq!(payload["supported"], false);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn native_host_install_copies_bundle_and_writes_launch_agent() {
+        with_temp_home(|home| {
+            let source_bundle = make_fake_bundle(home);
+            test_support::replace(test_support::State {
+                supported_platform: Some(true),
+                packaged_bundle: Some(source_bundle),
+                launch_agent_loaded: Some(true),
+                helper_executable: Some(true),
+                macos_major_version: Some(26),
+                stub_launchctl: true,
+                ..Default::default()
+            });
+
+            let payload = native_host_install().unwrap();
+            let installed_bundle = native_host_bundle_install_path();
+            let launch_agent = native_host_launch_agent_path();
+            let socket_path = native_host_socket_path();
+
+            assert_eq!(payload["status"], "installed");
+            assert_eq!(payload["preflight"]["status"], "ready");
+            assert_eq!(payload["preflight"]["appBundle"]["version"], "1.2.0");
+            assert!(installed_bundle.exists());
+            assert!(native_host_executable_in_bundle(&installed_bundle).exists());
+            assert!(launch_agent.exists());
+            assert_eq!(
+                fs::metadata(native_host_install_dir())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&launch_agent).unwrap().permissions().mode() & 0o777,
+                0o644
+            );
+
+            let plist = fs::read_to_string(&launch_agent).unwrap();
+            assert!(plist.contains("--socket-path"));
+            assert!(plist.contains(socket_path.to_string_lossy().as_ref()));
+            assert!(plist.contains(NATIVE_HOST_LABEL));
+
+            let launchctl_calls = test_support::launchctl_calls();
+            assert!(launchctl_calls
+                .iter()
+                .any(|args| args.first().map(String::as_str) == Some("bootstrap")));
+            assert!(launchctl_calls
+                .iter()
+                .any(|args| args.first().map(String::as_str) == Some("kickstart")));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn native_host_uninstall_removes_installed_artifacts() {
+        with_temp_home(|home| {
+            let bundle = native_host_bundle_install_path();
+            let executable = native_host_executable_in_bundle(&bundle);
+            let launch_agent = native_host_launch_agent_path();
+            let socket_path = native_host_socket_path();
+
+            write_file(
+                &bundle.join("Contents").join("Info.plist"),
+                "<plist version=\"1.0\"></plist>\n",
+            );
+            write_file(&executable, "#!/bin/sh\nexit 0\n");
+            write_file(&launch_agent, "<plist version=\"1.0\"></plist>\n");
+            write_file(&socket_path, "socket");
+            assert!(home.exists());
+
+            test_support::replace(test_support::State {
+                supported_platform: Some(true),
+                stub_launchctl: true,
+                ..Default::default()
+            });
+
+            let payload = native_host_uninstall().unwrap();
+            assert_eq!(payload["status"], "uninstalled");
+            assert!(!bundle.exists());
+            assert!(!launch_agent.exists());
+            assert!(!socket_path.exists());
+            assert!(test_support::launchctl_calls()
+                .iter()
+                .any(|args| args.first().map(String::as_str) == Some("bootout")));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn native_host_failure_message_guides_install_for_missing_bundle() {
+        with_temp_home(|_| {
+            test_support::replace(test_support::State {
+                supported_platform: Some(true),
+                stub_launchctl: true,
+                ..Default::default()
+            });
+
+            let message = native_host_failure_message("Base failure.");
+            assert!(message
+                .contains("Run `apw host install`, then `apw host doctor`, then `apw start`."));
+            assert!(message.contains("daemon.preflight.status=app_missing"));
+        });
+    }
 }
