@@ -1,7 +1,7 @@
 use crate::error::{APWError, Result};
 use crate::host::{
     ensure_native_host_runtime_dir, native_host_failure_message, native_host_preflight_status,
-    native_host_socket_path, native_host_status_note,
+    native_host_runtime_supported, native_host_socket_path, native_host_status_note,
 };
 use crate::types::{APWResponseEnvelope, Command, ManifestConfig, Message, RuntimeMode, Status};
 use crate::utils::{write_config, WriteConfigInput};
@@ -2107,7 +2107,7 @@ async fn run_native_host_accept_loop(bridge: BrowserBridge, listener: UnixListen
 }
 
 async fn start_native_daemon_inner(options: DaemonOptions, host: String) -> Result<()> {
-    if !cfg!(target_os = "macos") {
+    if !native_host_runtime_supported() {
         return Err(APWError::new(
             Status::ProcessNotRunning,
             native_host_failure_message("APW native host is supported only on macOS."),
@@ -2527,13 +2527,20 @@ mod tests {
     where
         F: FnOnce(&Path) -> R,
     {
-        let _guard = TEST_HOME_LOCK.lock().unwrap();
-        let temp = tempdir().unwrap();
+        let _guard = TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp = tempfile::Builder::new()
+            .prefix("apw-")
+            .tempdir_in("/tmp")
+            .unwrap();
         let previous_home = env::var("HOME").ok();
         env::set_var("HOME", temp.path());
+        crate::host::clear_native_host_test_overrides();
 
         let result = run(temp.path());
 
+        crate::host::clear_native_host_test_overrides();
         if let Some(previous_home) = previous_home {
             env::set_var("HOME", previous_home);
         } else {
@@ -2597,6 +2604,15 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn free_udp_port() -> u16 {
+        StdUdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[cfg(unix)]
     async fn connect_browser_bridge_for_test(
         port: u16,
     ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
@@ -2609,6 +2625,55 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         panic!("timed out connecting browser bridge");
+    }
+
+    #[cfg(unix)]
+    async fn connect_native_host_for_test() -> UnixStream {
+        let socket_path = native_host_socket_path();
+        for _ in 0..200 {
+            if let Ok(stream) = UnixStream::connect(&socket_path).await {
+                return stream;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!(
+            "timed out connecting native host socket at {}",
+            socket_path.display()
+        );
+    }
+
+    #[cfg(unix)]
+    fn seed_native_host_installation() {
+        crate::host::set_native_host_preflight_overrides_for_tests(
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(26),
+        );
+
+        let bundle_path = crate::host::native_host_bundle_install_path();
+        let executable = crate::host::native_host_executable_in_bundle(&bundle_path);
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(
+            bundle_path.join("Contents").join("Info.plist"),
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleShortVersionString</key>
+  <string>1.2.0</string>
+</dict>
+</plist>
+"#,
+        )
+        .unwrap();
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        let mut permissions = fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&executable, permissions).unwrap();
+
+        let launch_agent_path = crate::host::native_host_launch_agent_path();
+        fs::create_dir_all(launch_agent_path.parent().unwrap()).unwrap();
+        fs::write(&launch_agent_path, "<plist version=\"1.0\"></plist>\n").unwrap();
     }
 
     #[cfg(unix)]
@@ -3208,16 +3273,136 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial]
+    fn start_daemon_native_routes_requests_and_tracks_host_disconnect() {
+        with_temp_home(|home| {
+            seed_native_host_installation();
+            let daemon_port = free_udp_port();
+
+            let runtime = Runtime::new().unwrap();
+            let daemon = runtime.spawn(start_daemon_inner(
+                DaemonOptions {
+                    port: daemon_port,
+                    host: "127.0.0.1".to_string(),
+                    runtime_mode: RuntimeMode::Native,
+                    dry_run: false,
+                },
+                None,
+            ));
+
+            for _ in 0..200 {
+                if native_host_socket_path().exists() {
+                    break;
+                }
+                if daemon.is_finished() {
+                    let result = runtime.block_on(daemon).unwrap();
+                    panic!("native daemon exited early: {result:?}");
+                }
+                thread::sleep(StdDuration::from_millis(25));
+            }
+
+            let host_task = runtime.spawn(async move {
+                let mut stream = connect_native_host_for_test().await;
+                let hello = serde_json::to_vec(&BridgeFromBrowserMessage::Hello {
+                    browser: "native-host".to_string(),
+                    version: Some("native-host-test".to_string()),
+                })
+                .unwrap();
+                write_native_host_frame(&mut stream, &hello).await.unwrap();
+
+                let inbound = read_native_host_frame(&mut stream).await.unwrap();
+                let request = serde_json::from_slice::<BridgeToBrowserMessage>(&inbound).unwrap();
+                let request_id = match request {
+                    BridgeToBrowserMessage::Request {
+                        request_id,
+                        payload,
+                    } => {
+                        assert_eq!(payload["cmd"], json!(Command::GetCapabilities as i32));
+                        request_id
+                    }
+                };
+
+                let response = serde_json::to_vec(&BridgeFromBrowserMessage::Response {
+                    request_id,
+                    ok: true,
+                    payload: Some(json!({
+                        "ok": true,
+                        "code": 0,
+                        "payload": {"status": "ok"},
+                    })),
+                    code: None,
+                    error: None,
+                })
+                .unwrap();
+                write_native_host_frame(&mut stream, &response)
+                    .await
+                    .unwrap();
+
+                let disconnect = serde_json::to_vec(&BridgeFromBrowserMessage::Status {
+                    status: BRIDGE_STATUS_DISCONNECTED.to_string(),
+                    error: Some("Native host disconnected for test.".to_string()),
+                })
+                .unwrap();
+                write_native_host_frame(&mut stream, &disconnect)
+                    .await
+                    .unwrap();
+            });
+
+            let attached = wait_for_config(home, |value| {
+                value["runtimeMode"] == json!("native")
+                    && value["bridgeStatus"] == json!(BRIDGE_STATUS_ATTACHED)
+                    && value["bridgeBrowser"] == json!("native-host-test")
+                    && value["port"].as_u64().unwrap_or_default() > 0
+            });
+            let port = attached["port"].as_u64().unwrap() as u16;
+            assert!(attached["bridgeConnectedAt"].is_string());
+
+            let response = daemon_request(port, &capabilities_probe_message());
+            assert_eq!(response["ok"], json!(true));
+            assert_eq!(response["code"], json!(Status::Success));
+            assert_eq!(response["payload"]["status"], json!("ok"));
+
+            runtime.block_on(host_task).unwrap();
+
+            let disconnected = wait_for_config(home, |value| {
+                value["bridgeStatus"] == json!(BRIDGE_STATUS_DISCONNECTED)
+                    && value["bridgeBrowser"] == json!("native-host-test")
+                    && value["bridgeLastError"] == json!("Native host disconnected for test.")
+            });
+            assert!(disconnected["bridgeConnectedAt"].is_null());
+
+            let status = crate::client::ApplePasswordManager::new().status();
+            assert_eq!(status["host"]["status"], json!(BRIDGE_STATUS_DISCONNECTED));
+            assert_eq!(
+                status["host"]["lastError"],
+                json!("Native host disconnected for test.")
+            );
+            assert_eq!(status["host"]["bundleVersion"], json!("1.2.0"));
+            assert_eq!(
+                status["bridge"]["status"],
+                json!(BRIDGE_STATUS_DISCONNECTED)
+            );
+            assert!(status["bridge"]["browser"].is_null());
+
+            daemon.abort();
+            let result = runtime.block_on(daemon);
+            assert!(matches!(result, Err(error) if error.is_cancelled()));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
     fn start_daemon_routes_requests_end_to_end() {
         with_temp_home(|home| {
             let (_helper_dir, manifest) = helper_manifest(
                 "#!/bin/sh\nexec perl -e 'binmode STDIN; binmode STDOUT; select(STDOUT); $| = 1; sub respond { my ($json) = @_; print pack(\"V\", length($json)); print $json; } read(STDIN, my $lenbuf, 4) == 4 or exit 1; my $len = unpack(\"V\", $lenbuf); read(STDIN, my $payload, $len) == $len or exit 1; respond(q|{\"ok\":true,\"code\":0,\"payload\":{\"canFillOneTimeCodes\":true}}|); read(STDIN, my $lenbuf2, 4) == 4 or exit 1; my $len2 = unpack(\"V\", $lenbuf2); read(STDIN, my $payload2, $len2) == $len2 or exit 1; respond(q|{\"ok\":true,\"code\":0,\"payload\":{\"status\":\"ok\"}}|); sleep 5;'\n",
             );
+            let daemon_port = free_udp_port();
 
             let runtime = Runtime::new().unwrap();
             let daemon = runtime.spawn(start_daemon_with_manifest(
                 DaemonOptions {
-                    port: 0,
+                    port: daemon_port,
                     host: "127.0.0.1".to_string(),
                     runtime_mode: RuntimeMode::Direct,
                     dry_run: false,
@@ -3250,11 +3435,12 @@ mod tests {
             let (_helper_dir, manifest) = helper_manifest(
                 "#!/bin/sh\nexec perl -e 'binmode STDIN; binmode STDOUT; select(STDOUT); $| = 1; sub respond { my ($json) = @_; print pack(\"V\", length($json)); print $json; } read(STDIN, my $lenbuf, 4) == 4 or exit 1; my $len = unpack(\"V\", $lenbuf); read(STDIN, my $payload, $len) == $len or exit 1; respond(q|{\"ok\":true,\"code\":0,\"payload\":{\"canFillOneTimeCodes\":true}}|); read(STDIN, my $lenbuf2, 4) == 4 or exit 1; my $len2 = unpack(\"V\", $lenbuf2); read(STDIN, my $payload2, $len2) == $len2 or exit 1; exit 0;'\n",
             );
+            let daemon_port = free_udp_port();
 
             let runtime = Runtime::new().unwrap();
             let daemon = runtime.spawn(start_daemon_with_manifest(
                 DaemonOptions {
-                    port: 0,
+                    port: daemon_port,
                     host: "127.0.0.1".to_string(),
                     runtime_mode: RuntimeMode::Direct,
                     dry_run: false,

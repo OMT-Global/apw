@@ -32,6 +32,30 @@ fn native_host_supported_platform() -> bool {
     cfg!(target_os = "macos")
 }
 
+pub fn native_host_runtime_supported() -> bool {
+    native_host_supported_platform()
+}
+
+#[cfg(test)]
+pub fn set_native_host_preflight_overrides_for_tests(
+    supported_platform: Option<bool>,
+    launch_agent_loaded: Option<bool>,
+    helper_executable: Option<bool>,
+    macos_major_version: Option<u32>,
+) {
+    test_support::mutate(|state| {
+        state.supported_platform = supported_platform;
+        state.launch_agent_loaded = launch_agent_loaded;
+        state.helper_executable = helper_executable;
+        state.macos_major_version = macos_major_version;
+    });
+}
+
+#[cfg(test)]
+pub fn clear_native_host_test_overrides() {
+    test_support::reset();
+}
+
 pub fn native_host_run_dir() -> PathBuf {
     home_dir().join(".apw").join("run")
 }
@@ -569,6 +593,14 @@ mod test_support {
 
     fn state() -> &'static Mutex<State> {
         STATE.get_or_init(|| Mutex::new(State::default()))
+    }
+
+    pub fn mutate<F>(mutator: F)
+    where
+        F: FnOnce(&mut State),
+    {
+        let mut guard = state().lock().unwrap();
+        mutator(&mut guard);
     }
 
     pub fn replace(new_state: State) {
