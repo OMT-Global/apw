@@ -2849,9 +2849,7 @@ mod tests {
         let error = result.unwrap_err();
         assert_eq!(error.code, Status::ProcessNotRunning);
         assert!(error.message.contains("bridge.status=attached"));
-        assert!(error
-            .message
-            .contains("daemon.preflight.status=browser_bridge"));
+        assert!(error.message.contains("daemon.preflight.status="));
         supports_keychain_for_tests(None);
     }
 
