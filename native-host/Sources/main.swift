@@ -166,7 +166,9 @@ func connectSocket(path: String) throws -> FileHandle {
     }
 
     withUnsafeMutableBytes(of: &address.sun_path) { rawBuffer in
-        rawBuffer.initialize(repeating: 0)
+        if let baseAddress = rawBuffer.baseAddress {
+            memset(baseAddress, 0, rawBuffer.count)
+        }
         rawBuffer.copyBytes(from: pathBytes + [0])
     }
 
@@ -208,7 +210,7 @@ func sendHello(to socket: FileHandle) throws {
 func sendErrorResponse(requestId: String, error: String, socket: FileHandle) {
     let response: [String: Any] = [
         "type": "response",
-        "requestId": requestId,
+        "request_id": requestId,
         "ok": false,
         "error": error,
     ]
@@ -233,7 +235,7 @@ func runConnection(config: NativeHostConfig, socket: FileHandle, helper: HelperS
             continue
         }
 
-        let requestId = message["requestId"] as? String ?? ""
+        let requestId = (message["request_id"] as? String) ?? (message["requestId"] as? String) ?? ""
         guard let payload = message["payload"] else {
             sendErrorResponse(requestId: requestId, error: "Missing request payload.", socket: socket)
             continue
@@ -243,7 +245,7 @@ func runConnection(config: NativeHostConfig, socket: FileHandle, helper: HelperS
             let helperResponse = try helper.send(payload: payload)
             let response: [String: Any] = [
                 "type": "response",
-                "requestId": requestId,
+                "request_id": requestId,
                 "ok": true,
                 "payload": helperResponse,
             ]
