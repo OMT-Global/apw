@@ -400,6 +400,23 @@ fn wait_for_status(fixture: &NativeAppFixture) -> Value {
     parse_success(&status)
 }
 
+fn wait_for_socket_transport(fixture: &NativeAppFixture) -> Value {
+    for _ in 0..20 {
+        let payload = wait_for_status(fixture);
+        if payload["payload"]["app"]["service"]["live"]["transport"] == "unix_socket" {
+            return payload;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    let payload = wait_for_status(fixture);
+    assert_eq!(
+        payload["payload"]["app"]["service"]["live"]["transport"], "unix_socket",
+        "{payload:#?}"
+    );
+    payload
+}
+
 #[test]
 #[serial]
 fn doctor_bootstraps_runtime_without_installed_bundle() {
@@ -463,9 +480,7 @@ fn launch_status_and_login_work_over_socket() {
             || launch_payload["payload"]["status"] == "starting"
     );
 
-    let status = run_apw(&fixture, &["status", "--json"], &[]);
-    assert_eq!(status.status, 0, "{status:#?}");
-    let status_payload = parse_success(&status);
+    let status_payload = wait_for_socket_transport(&fixture);
     assert_eq!(status_payload["payload"]["app"]["service"]["running"], true);
     assert_eq!(
         status_payload["payload"]["app"]["service"]["live"]["serviceStatus"],
