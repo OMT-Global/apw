@@ -10,11 +10,10 @@ use crate::srp::{
 };
 use crate::types::{
     APWResponseEnvelope, APWRuntimeConfig, Action, Command, MSGTypes, Message, Payload,
-    RuntimeMode, SecretSessionVersion, Status, DEFAULT_HOST, DEFAULT_PORT, MAX_MESSAGE_BYTES,
+    RuntimeMode, SecretSessionVersion, Status, BRIDGE_STATUS_ATTACHED, BRIDGE_STATUS_DISCONNECTED,
+    BRIDGE_STATUS_ERROR, BRIDGE_STATUS_WAITING, DEFAULT_HOST, DEFAULT_PORT, MAX_MESSAGE_BYTES,
     PAKE_FIELD_B, PAKE_FIELD_ERR_CODE, PAKE_FIELD_HAMK, PAKE_FIELD_MSG, PAKE_FIELD_PROTO,
     PAKE_FIELD_S, PAKE_FIELD_TID, SMSG,
-    BRIDGE_STATUS_ATTACHED, BRIDGE_STATUS_DISCONNECTED, BRIDGE_STATUS_ERROR,
-    BRIDGE_STATUS_WAITING,
 };
 use crate::utils::{
     clear_config, read_config, to_base64, write_config, ConfigReadOptions, WriteConfigInput,

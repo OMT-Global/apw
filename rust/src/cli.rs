@@ -61,7 +61,6 @@ fn parse_host_arg(raw: &str) -> std::result::Result<String, String> {
     parse_host(raw).map_err(|error| error.message)
 }
 
-
 fn sanitize_url(raw: &str) -> Result<String, APWError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -549,7 +548,6 @@ fn parse_runtime_mode(raw: &str) -> std::result::Result<RuntimeMode, String> {
         }
     })
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
 use crate::error::{APWError, Result};
-use crate::types::{Status, VERSION, MAX_MESSAGE_BYTES};
+use crate::types::{Status, MAX_MESSAGE_BYTES, VERSION};
 use serde_json::{json, Value};
 use std::env;
 use std::fs;

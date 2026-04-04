@@ -5,8 +5,8 @@ use crate::host::{
 };
 use crate::types::{
     APWResponseEnvelope, Command, ManifestConfig, Message, RuntimeMode, Status,
-    BRIDGE_STATUS_ATTACHED, BRIDGE_STATUS_DISCONNECTED, BRIDGE_STATUS_ERROR,
-    BRIDGE_STATUS_WAITING, MAX_MESSAGE_BYTES,
+    BRIDGE_STATUS_ATTACHED, BRIDGE_STATUS_DISCONNECTED, BRIDGE_STATUS_ERROR, BRIDGE_STATUS_WAITING,
+    MAX_MESSAGE_BYTES,
 };
 use crate::utils::{write_config, WriteConfigInput};
 use chrono::Utc;
