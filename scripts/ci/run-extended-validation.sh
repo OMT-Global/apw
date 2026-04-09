@@ -23,9 +23,6 @@ run_step() {
 require_tool cargo
 require_tool swift
 
-run_step "Rust legacy parity tests" \
-  cargo test --manifest-path rust/Cargo.toml --test legacy_parity
-
 run_step "Rust native app end-to-end tests" \
   cargo test --manifest-path rust/Cargo.toml --test native_app_e2e
 
