@@ -639,8 +639,12 @@ fn external_provider_login(url: &str) -> Result<Option<Value>> {
         .ok_or_else(|| APWError::new(Status::InvalidParam, "Invalid URL for external fallback."))?;
 
     let payload = match provider {
-        ExternalFallbackProvider::OnePassword => load_1password_credential(&provider_path, &host, url)?,
-        ExternalFallbackProvider::Bitwarden => load_bitwarden_credential(&provider_path, &host, url)?,
+        ExternalFallbackProvider::OnePassword => {
+            load_1password_credential(&provider_path, &host, url)?
+        }
+        ExternalFallbackProvider::Bitwarden => {
+            load_bitwarden_credential(&provider_path, &host, url)?
+        }
     };
     Ok(Some(payload))
 }
@@ -656,7 +660,10 @@ fn load_1password_credential(path: &Path, host: &str, raw_url: &str) -> Result<V
         .map_err(|error| {
             APWError::new(
                 Status::ProcessNotRunning,
-                format!("Failed to execute 1Password CLI at {}: {error}", path.display()),
+                format!(
+                    "Failed to execute 1Password CLI at {}: {error}",
+                    path.display()
+                ),
             )
         })?;
     if !output.status.success() {
@@ -678,7 +685,12 @@ fn load_1password_credential(path: &Path, host: &str, raw_url: &str) -> Result<V
     let fields = item
         .get("fields")
         .and_then(Value::as_array)
-        .ok_or_else(|| APWError::new(Status::ProtoInvalidResponse, "1Password item is missing fields."))?;
+        .ok_or_else(|| {
+            APWError::new(
+                Status::ProtoInvalidResponse,
+                "1Password item is missing fields.",
+            )
+        })?;
     let username = fields
         .iter()
         .find(|field| {
@@ -688,7 +700,12 @@ fn load_1password_credential(path: &Path, host: &str, raw_url: &str) -> Result<V
         })
         .and_then(|field| field.get("value"))
         .and_then(Value::as_str)
-        .ok_or_else(|| APWError::new(Status::ProtoInvalidResponse, "1Password item is missing a username."))?;
+        .ok_or_else(|| {
+            APWError::new(
+                Status::ProtoInvalidResponse,
+                "1Password item is missing a username.",
+            )
+        })?;
     let password = fields
         .iter()
         .find(|field| {
@@ -698,7 +715,12 @@ fn load_1password_credential(path: &Path, host: &str, raw_url: &str) -> Result<V
         })
         .and_then(|field| field.get("value"))
         .and_then(Value::as_str)
-        .ok_or_else(|| APWError::new(Status::ProtoInvalidResponse, "1Password item is missing a password."))?;
+        .ok_or_else(|| {
+            APWError::new(
+                Status::ProtoInvalidResponse,
+                "1Password item is missing a password.",
+            )
+        })?;
     let resolved_url = item
         .get("urls")
         .and_then(Value::as_array)
@@ -726,7 +748,10 @@ fn load_bitwarden_credential(path: &Path, host: &str, raw_url: &str) -> Result<V
         .map_err(|error| {
             APWError::new(
                 Status::ProcessNotRunning,
-                format!("Failed to execute Bitwarden CLI at {}: {error}", path.display()),
+                format!(
+                    "Failed to execute Bitwarden CLI at {}: {error}",
+                    path.display()
+                ),
             )
         })?;
     if !output.status.success() {
@@ -748,19 +773,39 @@ fn load_bitwarden_credential(path: &Path, host: &str, raw_url: &str) -> Result<V
     let item = items
         .as_array()
         .and_then(|values| values.first())
-        .ok_or_else(|| APWError::new(Status::NoResults, format!("Bitwarden CLI returned no credential for {host}.")))?;
+        .ok_or_else(|| {
+            APWError::new(
+                Status::NoResults,
+                format!("Bitwarden CLI returned no credential for {host}."),
+            )
+        })?;
     let login = item
         .get("login")
         .and_then(Value::as_object)
-        .ok_or_else(|| APWError::new(Status::ProtoInvalidResponse, "Bitwarden item is missing login data."))?;
+        .ok_or_else(|| {
+            APWError::new(
+                Status::ProtoInvalidResponse,
+                "Bitwarden item is missing login data.",
+            )
+        })?;
     let username = login
         .get("username")
         .and_then(Value::as_str)
-        .ok_or_else(|| APWError::new(Status::ProtoInvalidResponse, "Bitwarden item is missing a username."))?;
+        .ok_or_else(|| {
+            APWError::new(
+                Status::ProtoInvalidResponse,
+                "Bitwarden item is missing a username.",
+            )
+        })?;
     let password = login
         .get("password")
         .and_then(Value::as_str)
-        .ok_or_else(|| APWError::new(Status::ProtoInvalidResponse, "Bitwarden item is missing a password."))?;
+        .ok_or_else(|| {
+            APWError::new(
+                Status::ProtoInvalidResponse,
+                "Bitwarden item is missing a password.",
+            )
+        })?;
     let resolved_url = login
         .get("uris")
         .and_then(Value::as_array)

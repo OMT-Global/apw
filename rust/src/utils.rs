@@ -328,14 +328,14 @@ pub fn read_config(opts: Option<ConfigReadOptions>) -> Result<APWRuntimeConfig> 
             last_launch_error: raw.last_launch_error,
             last_launch_strategy: raw.last_launch_strategy,
             bridge_status: raw.bridge_status,
-                bridge_browser: raw.bridge_browser,
-                bridge_connected_at: raw.bridge_connected_at,
-                bridge_last_error: raw.bridge_last_error,
-                fallback_provider: raw.fallback_provider,
-                fallback_provider_path: raw.fallback_provider_path,
-                created_at: raw.created_at,
-            });
-        }
+            bridge_browser: raw.bridge_browser,
+            bridge_connected_at: raw.bridge_connected_at,
+            bridge_last_error: raw.bridge_last_error,
+            fallback_provider: raw.fallback_provider,
+            fallback_provider_path: raw.fallback_provider_path,
+            created_at: raw.created_at,
+        });
+    }
 
     let secret_source = resolve_secret_source(&raw);
     let shared_secret = match secret_source {
