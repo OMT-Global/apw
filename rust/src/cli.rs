@@ -213,7 +213,12 @@ pub struct Cli {
     pub command: Commands,
     #[arg(long = "json", global = true)]
     pub json: bool,
-    #[arg(long = "log-level", global = true, env = "APW_LOG", default_value = "warn")]
+    #[arg(
+        long = "log-level",
+        global = true,
+        env = "APW_LOG",
+        default_value = "warn"
+    )]
     pub log_level: LogLevel,
 }
 
@@ -532,7 +537,10 @@ fn run_otp(
 }
 
 async fn run_start(args: StartCommand) -> Result<(), APWError> {
-    logging::info("daemon", format!("starting daemon on {}:{}", args.bind, args.port));
+    logging::info(
+        "daemon",
+        format!("starting daemon on {}:{}", args.bind, args.port),
+    );
     let host = parse_host(&args.bind)?;
     let port = args.port;
     start_daemon(DaemonOptions {

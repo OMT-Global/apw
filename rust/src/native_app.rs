@@ -226,7 +226,10 @@ fn rotate_broker_log_if_needed(path: &Path) -> Result<()> {
         fs::remove_file(&rotated).map_err(|error| {
             APWError::new(
                 Status::ProcessNotRunning,
-                format!("Failed to remove rotated broker log {}: {error}", rotated.display()),
+                format!(
+                    "Failed to remove rotated broker log {}: {error}",
+                    rotated.display()
+                ),
             )
         })?;
     }
@@ -237,7 +240,10 @@ fn rotate_broker_log_if_needed(path: &Path) -> Result<()> {
             format!("Failed to rotate broker log {}: {error}", path.display()),
         )
     })?;
-    logging::warn("native-app", format!("rotated broker log to {}", rotated.display()));
+    logging::warn(
+        "native-app",
+        format!("rotated broker log to {}", rotated.display()),
+    );
     Ok(())
 }
 
@@ -413,7 +419,10 @@ fn send_request_via_executable(command: &str, payload: Value) -> Result<Value> {
     let executable = native_app_executable_in_bundle(&bundle_path);
     logging::warn(
         "native-app",
-        format!("broker socket unavailable, falling back to {}", executable.display()),
+        format!(
+            "broker socket unavailable, falling back to {}",
+            executable.display()
+        ),
     );
     let payload_arg = serde_json::to_string(&payload).map_err(|error| {
         APWError::new(
@@ -679,7 +688,10 @@ mod tests {
             let payload = native_app_status();
             assert_eq!(payload["installed"], json!(false));
             assert_eq!(payload["service"]["running"], json!(false));
-            assert!(payload["brokerLogPath"].as_str().unwrap().ends_with("broker.log"));
+            assert!(payload["brokerLogPath"]
+                .as_str()
+                .unwrap()
+                .ends_with("broker.log"));
         });
     }
 
