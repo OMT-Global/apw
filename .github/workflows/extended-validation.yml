@@ -89,12 +89,15 @@ jobs:
 
   extended-checks:
     name: Extended Checks
-    runs-on: ['self-hosted', 'synology', 'shell-only', 'public']
+    runs-on: macos-15
     timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.extended == 'true' || needs.changes.outputs.app == 'true'
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Run extended validation
         run: bash scripts/ci/run-extended-validation.sh
