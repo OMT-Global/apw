@@ -594,7 +594,15 @@ pub fn native_app_launch() -> Result<Value> {
 }
 
 pub fn native_app_login(url: &str) -> Result<Value> {
-    let payload = send_request("login", json!({ "url": url }))?;
+    native_app_request("login", url)
+}
+
+pub fn native_app_fill(url: &str) -> Result<Value> {
+    native_app_request("fill", url)
+}
+
+fn native_app_request(intent: &str, url: &str) -> Result<Value> {
+    let payload = send_request(intent, json!({ "url": url, "intent": intent }))?;
     Ok(payload)
 }
 
@@ -640,6 +648,35 @@ mod tests {
             let payload = native_app_status();
             assert_eq!(payload["installed"], json!(false));
             assert_eq!(payload["service"]["running"], json!(false));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn fill_request_includes_fill_intent() {
+        with_temp_home(|| {
+            let bundle_dir = native_app_bundle_install_path();
+            fs::create_dir_all(bundle_dir.parent().unwrap()).unwrap();
+            fs::create_dir_all(bundle_dir.join("Contents").join("MacOS")).unwrap();
+
+            let executable = native_app_executable_in_bundle(&bundle_dir);
+            fs::write(
+                &executable,
+                r#"#!/usr/bin/env python3
+import json
+import sys
+payload = json.loads(sys.argv[3])
+print(json.dumps({"ok": True, "code": 0, "payload": payload}))
+"#,
+            )
+            .unwrap();
+            let mut permissions = fs::metadata(&executable).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&executable, permissions).unwrap();
+
+            let payload = native_app_fill("https://example.com").unwrap();
+            assert_eq!(payload["intent"], "fill");
+            assert_eq!(payload["url"], "https://example.com");
         });
     }
 }
