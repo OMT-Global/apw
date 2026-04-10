@@ -22,7 +22,8 @@ fn main() {
 
     let git_sha = command_output("git", &["rev-parse", "--short", "HEAD"])
         .unwrap_or_else(|| "unknown".to_string());
-    let build_date = command_output("date", &["-u", "+%F"]).unwrap_or_else(|| "unknown".to_string());
+    let build_date =
+        command_output("date", &["-u", "+%F"]).unwrap_or_else(|| "unknown".to_string());
     let rust_version = command_output("rustc", &["--version"])
         .and_then(|value| value.split_whitespace().nth(1).map(str::to_string))
         .unwrap_or_else(|| "unknown".to_string());
