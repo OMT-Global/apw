@@ -5,6 +5,7 @@ mod client;
 mod daemon;
 mod error;
 mod host;
+mod logging;
 mod native_app;
 mod secrets;
 mod srp;
@@ -13,6 +14,7 @@ mod utils;
 
 use cli::{run, Cli};
 use client::ApplePasswordManager;
+use logging::error as log_error;
 use std::env;
 use std::process;
 
@@ -21,9 +23,11 @@ async fn main() {
     let raw_args: Vec<String> = env::args().collect();
     let normalized_args = normalize_legacy_args(raw_args);
     let args = Cli::parse_from(normalized_args);
+    logging::init(args.log_level);
     let manager = ApplePasswordManager::new();
     let json_output = args.json;
     if let Err(error) = run(manager, args).await {
+        log_error("cli", &error.message);
         if json_output {
             eprintln!(
                 "{}",

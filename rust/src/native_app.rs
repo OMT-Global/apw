@@ -1,4 +1,5 @@
 use crate::error::{APWError, Result};
+use crate::logging;
 use crate::types::{Status, MAX_MESSAGE_BYTES, VERSION};
 use serde_json::{json, Value};
 use std::env;
@@ -16,9 +17,11 @@ const NATIVE_APP_EXECUTABLE_NAME: &str = "APW";
 const NATIVE_APP_SOCKET_NAME: &str = "broker.sock";
 const NATIVE_APP_STATUS_NAME: &str = "status.json";
 const NATIVE_APP_CREDENTIALS_NAME: &str = "credentials.json";
+const NATIVE_APP_BROKER_LOG_NAME: &str = "broker.log";
 const NATIVE_APP_RUNTIME_DIR_MODE: u32 = 0o700;
 const NATIVE_APP_FILE_MODE: u32 = 0o600;
 const MAX_BROKER_BYTES: usize = MAX_MESSAGE_BYTES;
+const MAX_BROKER_LOG_BYTES: u64 = 10 * 1024 * 1024;
 const SOCKET_TIMEOUT_MS: u64 = 3_000;
 const CONNECT_RETRIES: usize = 10;
 const CONNECT_RETRY_DELAY_MS: u64 = 200;
@@ -112,6 +115,10 @@ pub fn native_app_credentials_path() -> PathBuf {
     native_app_runtime_dir().join(NATIVE_APP_CREDENTIALS_NAME)
 }
 
+pub fn native_app_broker_log_path() -> PathBuf {
+    native_app_runtime_dir().join(NATIVE_APP_BROKER_LOG_NAME)
+}
+
 pub fn native_app_install_dir() -> PathBuf {
     native_app_runtime_dir().join("installed")
 }
@@ -202,6 +209,36 @@ fn read_bundle_version(bundle_path: &Path) -> Option<String> {
 
 fn load_status_file() -> Option<Value> {
     serde_json::from_str(&fs::read_to_string(native_app_status_path()).ok()?).ok()
+}
+
+fn rotate_broker_log_if_needed(path: &Path) -> Result<()> {
+    let metadata = match fs::metadata(path) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+
+    if metadata.len() < MAX_BROKER_LOG_BYTES {
+        return Ok(());
+    }
+
+    let rotated = path.with_extension("log.1");
+    if rotated.exists() {
+        fs::remove_file(&rotated).map_err(|error| {
+            APWError::new(
+                Status::ProcessNotRunning,
+                format!("Failed to remove rotated broker log {}: {error}", rotated.display()),
+            )
+        })?;
+    }
+
+    fs::rename(path, &rotated).map_err(|error| {
+        APWError::new(
+            Status::ProcessNotRunning,
+            format!("Failed to rotate broker log {}: {error}", path.display()),
+        )
+    })?;
+    logging::warn("native-app", format!("rotated broker log to {}", rotated.display()));
+    Ok(())
 }
 
 fn default_credentials_payload() -> Value {
@@ -374,6 +411,10 @@ fn send_request_via_executable(command: &str, payload: Value) -> Result<Value> {
         ));
     }
     let executable = native_app_executable_in_bundle(&bundle_path);
+    logging::warn(
+        "native-app",
+        format!("broker socket unavailable, falling back to {}", executable.display()),
+    );
     let payload_arg = serde_json::to_string(&payload).map_err(|error| {
         APWError::new(
             Status::GenericError,
@@ -426,6 +467,7 @@ pub fn native_app_status() -> Value {
         "bundleVersion": read_bundle_version(&install_path),
         "socketPath": native_app_socket_path(),
         "credentialsPath": native_app_credentials_path(),
+        "brokerLogPath": native_app_broker_log_path(),
         "service": {
             "running": socket_running(),
             "statusFile": native_app_status_path(),
@@ -464,7 +506,8 @@ pub fn native_app_doctor() -> Result<Value> {
                 "Run `./scripts/build-native-app.sh` if the app bundle is missing.",
                 "Run `apw app install` to install the APW app bundle into the user runtime directory.",
                 "Run `apw app launch` to start the local broker service.",
-                "Run `apw login https://example.com` to exercise the bootstrap credential flow."
+                "Run `apw login https://example.com` to exercise the bootstrap credential flow.",
+                format!("Inspect broker logs at {}.", native_app_broker_log_path().display())
             ]),
         );
     }
@@ -535,28 +578,25 @@ pub fn native_app_launch() -> Result<Value> {
         }));
     }
 
-    let status_log = native_app_runtime_dir().join("app.stdout.log");
-    let error_log = native_app_runtime_dir().join("app.stderr.log");
+    let broker_log = native_app_broker_log_path();
+    rotate_broker_log_if_needed(&broker_log)?;
     let stdout = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&status_log)
+        .open(&broker_log)
         .map_err(|error| {
             APWError::new(
                 Status::ProcessNotRunning,
-                format!("Failed to open native app stdout log: {error}"),
+                format!("Failed to open native app broker log: {error}"),
             )
         })?;
-    let stderr = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&error_log)
-        .map_err(|error| {
-            APWError::new(
-                Status::ProcessNotRunning,
-                format!("Failed to open native app stderr log: {error}"),
-            )
-        })?;
+    set_permissions(&broker_log, NATIVE_APP_FILE_MODE)?;
+    let stderr = stdout.try_clone().map_err(|error| {
+        APWError::new(
+            Status::ProcessNotRunning,
+            format!("Failed to clone native app broker log handle: {error}"),
+        )
+    })?;
 
     let mut command = Command::new(&executable);
     command
@@ -588,8 +628,7 @@ pub fn native_app_launch() -> Result<Value> {
         "status": if socket_running() { "launched" } else { "starting" },
         "bundlePath": bundle_path,
         "socketPath": native_app_socket_path(),
-        "stdoutLog": status_log,
-        "stderrLog": error_log,
+        "brokerLog": broker_log,
     }))
 }
 
@@ -640,6 +679,22 @@ mod tests {
             let payload = native_app_status();
             assert_eq!(payload["installed"], json!(false));
             assert_eq!(payload["service"]["running"], json!(false));
+            assert!(payload["brokerLogPath"].as_str().unwrap().ends_with("broker.log"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn rotates_broker_log_when_it_exceeds_limit() {
+        with_temp_home(|| {
+            ensure_runtime_dir().unwrap();
+            let path = native_app_broker_log_path();
+            fs::write(&path, vec![b'x'; MAX_BROKER_LOG_BYTES as usize]).unwrap();
+
+            rotate_broker_log_if_needed(&path).unwrap();
+
+            assert!(!path.exists());
+            assert!(path.with_extension("log.1").exists());
         });
     }
 }
