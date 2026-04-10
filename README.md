@@ -26,6 +26,7 @@ Archive policy: [docs/ARCHIVE_POLICY.md](/Users/johnteneyckjr./src/apw/docs/ARCH
 - Installs the APW macOS app bundle with `apw app install`
 - Launches the local APW broker with `apw app launch`
 - Reports app, broker, and legacy runtime health with `apw status` and `apw status --json`
+- Reports machine-readable build metadata with `apw version --json`
 - Reports bootstrap diagnostics with `apw doctor`
 - Returns an app-mediated credential for a supported domain with `apw login <url>`
 
@@ -97,6 +98,8 @@ apw app launch
 apw doctor
 apw status
 apw status --json
+apw version
+apw version --json
 apw login https://example.com
 ```
 

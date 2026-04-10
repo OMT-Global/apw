@@ -5,7 +5,9 @@ use crate::host::{native_host_doctor, native_host_install, native_host_uninstall
 use crate::native_app::{
     native_app_doctor, native_app_install, native_app_launch, native_app_login,
 };
-use crate::types::{Payload, RuntimeMode, Status};
+use crate::types::{
+    Payload, RuntimeMode, Status, BUILD_DATE, BUILD_TARGET, GIT_SHA, RUST_VERSION, VERSION,
+};
 use crate::utils::{bigint_to_base64, read_bigint};
 use clap::{Args, Parser, Subcommand};
 use rpassword::prompt_password;
@@ -225,6 +227,7 @@ pub enum Commands {
     Otp(OtpCommand),
     Start(StartCommand),
     Status(StatusCommand),
+    Version(VersionCommand),
 }
 
 #[derive(Args)]
@@ -348,6 +351,9 @@ pub struct StatusCommand {
     pub json: bool,
 }
 
+#[derive(Args, Default)]
+pub struct VersionCommand {}
+
 pub async fn run(mut manager: ApplePasswordManager, cli: Cli) -> Result<(), APWError> {
     match cli.command {
         Commands::App(args) => run_app(args, cli.json),
@@ -359,6 +365,7 @@ pub async fn run(mut manager: ApplePasswordManager, cli: Cli) -> Result<(), APWE
         Commands::Otp(args) => run_otp(&mut manager, args, cli.json),
         Commands::Start(args) => run_start(args).await,
         Commands::Status(args) => run_status(&mut manager, args, cli.json),
+        Commands::Version(args) => run_version(args, cli.json),
     }
 }
 
@@ -390,6 +397,20 @@ fn run_status(
 ) -> Result<(), APWError> {
     let payload = manager.status();
     print_status(payload, args.json || cli_json);
+    Ok(())
+}
+
+fn run_version(_args: VersionCommand, cli_json: bool) -> Result<(), APWError> {
+    if cli_json {
+        print_output(&version_payload()?, Status::Success, true);
+        return Ok(());
+    }
+
+    print_output(
+        &serde_json::Value::String(format!("apw {}", VERSION)),
+        Status::Success,
+        false,
+    );
     Ok(())
 }
 
@@ -531,6 +552,49 @@ async fn run_start(args: StartCommand) -> Result<(), APWError> {
     .await
 }
 
+fn version_payload() -> Result<serde_json::Value, APWError> {
+    Ok(json!({
+      "version": VERSION,
+      "semver": parse_semver(VERSION)?,
+      "build_date": BUILD_DATE,
+      "git_sha": GIT_SHA,
+      "rust_version": RUST_VERSION,
+      "target": BUILD_TARGET,
+    }))
+}
+
+fn parse_semver(version: &str) -> Result<serde_json::Value, APWError> {
+    let mut parts = version.split('.');
+    let major = parts
+        .next()
+        .ok_or_else(|| APWError::new(Status::GenericError, "Invalid semantic version."))?
+        .parse::<u64>()
+        .map_err(|_| APWError::new(Status::GenericError, "Invalid semantic version."))?;
+    let minor = parts
+        .next()
+        .ok_or_else(|| APWError::new(Status::GenericError, "Invalid semantic version."))?
+        .parse::<u64>()
+        .map_err(|_| APWError::new(Status::GenericError, "Invalid semantic version."))?;
+    let patch = parts
+        .next()
+        .ok_or_else(|| APWError::new(Status::GenericError, "Invalid semantic version."))?
+        .parse::<u64>()
+        .map_err(|_| APWError::new(Status::GenericError, "Invalid semantic version."))?;
+
+    if parts.next().is_some() {
+        return Err(APWError::new(
+            Status::GenericError,
+            "Invalid semantic version.",
+        ));
+    }
+
+    Ok(json!({
+      "major": major,
+      "minor": minor,
+      "patch": patch,
+    }))
+}
+
 fn parse_runtime_mode(raw: &str) -> std::result::Result<RuntimeMode, String> {
     let normalized = raw.trim().to_lowercase();
     Ok(match normalized.as_str() {
@@ -589,6 +653,32 @@ mod tests {
         assert!(sanitize_url("   ").is_err());
         assert!(sanitize_url("http://\0evil").is_err());
         assert!(sanitize_url("://bad").is_err());
+    }
+
+    #[test]
+    fn version_subcommand_is_parsed() {
+        let cli = Cli::parse_from(["apw", "version"]);
+        assert!(matches!(cli.command, Commands::Version(_)));
+    }
+
+    #[test]
+    fn version_payload_includes_expected_metadata() {
+        let payload = version_payload().unwrap();
+        assert_eq!(payload["version"], VERSION);
+        assert_eq!(payload["semver"]["major"], 2);
+        assert_eq!(payload["semver"]["minor"], 0);
+        assert_eq!(payload["semver"]["patch"], 0);
+        assert_eq!(payload["build_date"], BUILD_DATE);
+        assert_eq!(payload["git_sha"], GIT_SHA);
+        assert_eq!(payload["rust_version"], RUST_VERSION);
+        assert_eq!(payload["target"], BUILD_TARGET);
+    }
+
+    #[test]
+    fn parse_semver_rejects_invalid_shapes() {
+        assert!(parse_semver("1.2").is_err());
+        assert!(parse_semver("1.2.3.4").is_err());
+        assert!(parse_semver("one.two.three").is_err());
     }
 
     #[test]
