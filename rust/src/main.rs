@@ -23,9 +23,9 @@ async fn main() {
     let raw_args: Vec<String> = env::args().collect();
     let normalized_args = normalize_legacy_args(raw_args);
     let args = Cli::parse_from(normalized_args);
-    logging::init(args.log_level);
-    let manager = ApplePasswordManager::new();
     let json_output = args.json;
+    logging::init(args.log_level, json_output);
+    let manager = ApplePasswordManager::new();
     if let Err(error) = run(manager, args).await {
         log_error("cli", &error.message);
         if json_output {

@@ -11,17 +11,23 @@ pub enum LogLevel {
 }
 
 static LOG_LEVEL: OnceLock<LogLevel> = OnceLock::new();
+static MACHINE_READABLE_OUTPUT: OnceLock<bool> = OnceLock::new();
 
-pub fn init(level: LogLevel) {
+pub fn init(level: LogLevel, machine_readable_output: bool) {
     let _ = LOG_LEVEL.set(level);
+    let _ = MACHINE_READABLE_OUTPUT.set(machine_readable_output);
 }
 
 fn enabled(level: LogLevel) -> bool {
     level >= *LOG_LEVEL.get().unwrap_or(&LogLevel::Warn)
 }
 
+pub fn machine_readable_output() -> bool {
+    *MACHINE_READABLE_OUTPUT.get().unwrap_or(&false)
+}
+
 fn emit(level: LogLevel, component: &str, message: impl AsRef<str>) {
-    if !enabled(level) {
+    if machine_readable_output() || !enabled(level) {
         return;
     }
 

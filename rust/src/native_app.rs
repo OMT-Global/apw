@@ -30,7 +30,10 @@ fn home_dir() -> PathBuf {
     match env::var("HOME").or_else(|_| env::var("USERPROFILE")) {
         Ok(dir) => PathBuf::from(dir),
         Err(_) => {
-            eprintln!("apw: warning: HOME is not set; runtime files will be written to the current directory");
+            logging::warn(
+                "native-app",
+                "HOME is not set; runtime files will be written to the current directory",
+            );
             PathBuf::from(".")
         }
     }
@@ -280,10 +283,12 @@ fn ensure_default_credentials_file() -> Result<()> {
         )
     })?;
     set_permissions(&path, NATIVE_APP_FILE_MODE)?;
-    eprintln!(
-        "apw: info: created demo credentials file at {}. \
-         This file contains placeholder credentials — replace them with real entries before use.",
-        path.display()
+    logging::info(
+        "native-app",
+        format!(
+            "created demo credentials file at {}. This file contains placeholder credentials; replace them before use.",
+            path.display()
+        ),
     );
     Ok(())
 }
