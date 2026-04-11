@@ -27,6 +27,7 @@ Archive policy: [docs/ARCHIVE_POLICY.md](/Users/johnteneyckjr./src/apw/docs/ARCH
 - Launches the local APW broker with `apw app launch`
 - Reports app, broker, and legacy runtime health with `apw status` and `apw status --json`
 - Reports bootstrap diagnostics with `apw doctor`
+- Returns a fill-intent credential envelope with `apw fill <url>`
 - Returns an app-mediated credential for a supported domain with `apw login <url>`
 
 ## Support model
@@ -97,6 +98,7 @@ apw app launch
 apw doctor
 apw status
 apw status --json
+apw fill https://example.com
 apw login https://example.com
 ```
 

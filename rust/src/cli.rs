@@ -3,7 +3,7 @@ use crate::daemon::{start_daemon, DaemonOptions};
 use crate::error::APWError;
 use crate::host::{native_host_doctor, native_host_install, native_host_uninstall};
 use crate::native_app::{
-    native_app_doctor, native_app_install, native_app_launch, native_app_login,
+    native_app_doctor, native_app_fill, native_app_install, native_app_launch, native_app_login,
 };
 use crate::types::{Payload, RuntimeMode, Status};
 use crate::utils::{bigint_to_base64, read_bigint};
@@ -219,6 +219,7 @@ pub enum Commands {
     App(AppCommand),
     Auth(AuthCommand),
     Doctor(DoctorCommand),
+    Fill(FillCommand),
     Host(HostCommand),
     Login(LoginCommand),
     Pw(PwCommand),
@@ -244,6 +245,11 @@ pub struct DoctorCommand {}
 
 #[derive(Args)]
 pub struct LoginCommand {
+    pub url: String,
+}
+
+#[derive(Args)]
+pub struct FillCommand {
     pub url: String,
 }
 
@@ -353,6 +359,7 @@ pub async fn run(mut manager: ApplePasswordManager, cli: Cli) -> Result<(), APWE
         Commands::App(args) => run_app(args, cli.json),
         Commands::Auth(args) => run_auth(&mut manager, args, cli.json),
         Commands::Doctor(args) => run_doctor(args, cli.json),
+        Commands::Fill(args) => run_fill(args, cli.json),
         Commands::Host(args) => run_host(args, cli.json),
         Commands::Login(args) => run_login(args, cli.json),
         Commands::Pw(args) => run_pw(&mut manager, args, cli.json),
@@ -379,6 +386,12 @@ fn run_doctor(_args: DoctorCommand, cli_json: bool) -> Result<(), APWError> {
 
 fn run_login(args: LoginCommand, cli_json: bool) -> Result<(), APWError> {
     let payload = native_app_login(&sanitize_url(&args.url)?)?;
+    print_output(&payload, Status::Success, cli_json);
+    Ok(())
+}
+
+fn run_fill(args: FillCommand, cli_json: bool) -> Result<(), APWError> {
+    let payload = native_app_fill(&sanitize_url(&args.url)?)?;
     print_output(&payload, Status::Success, cli_json);
     Ok(())
 }
@@ -589,6 +602,12 @@ mod tests {
         assert!(sanitize_url("   ").is_err());
         assert!(sanitize_url("http://\0evil").is_err());
         assert!(sanitize_url("://bad").is_err());
+    }
+
+    #[test]
+    fn fill_subcommand_is_parsed() {
+        let cli = Cli::parse_from(["apw", "fill", "example.com"]);
+        assert!(matches!(cli.command, Commands::Fill(_)));
     }
 
     #[test]

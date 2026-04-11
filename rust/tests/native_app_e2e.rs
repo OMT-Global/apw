@@ -122,6 +122,7 @@ def login_payload(raw_url, transport):
         "code": 0,
         "payload": {
             "status": "approved",
+            "intent": "login",
             "url": credential["url"],
             "domain": credential["domain"],
             "username": credential["username"],
@@ -130,6 +131,13 @@ def login_payload(raw_url, transport):
             "userMediated": True,
         },
     }
+
+
+def fill_payload(raw_url, transport):
+    envelope = login_payload(raw_url, transport)
+    if envelope.get("ok"):
+        envelope["payload"]["intent"] = "fill"
+    return envelope
 
 
 def dispatch(command, payload, transport):
@@ -154,6 +162,8 @@ def dispatch(command, payload, transport):
         }
     if command == "login":
         return login_payload((payload or {}).get("url", ""), transport)
+    if command == "fill":
+        return fill_payload((payload or {}).get("url", ""), transport)
     return {"ok": False, "code": 1, "error": f"Unsupported native app command: {command}"}
 
 
@@ -498,7 +508,28 @@ fn launch_status_and_login_work_over_socket() {
     assert_eq!(login_payload["payload"]["domain"], "example.com");
     assert_eq!(login_payload["payload"]["username"], "demo@example.com");
     assert_eq!(login_payload["payload"]["password"], "apw-demo-password");
+    assert_eq!(login_payload["payload"]["intent"], "login");
     assert_eq!(login_payload["payload"]["transport"], "unix_socket");
+}
+
+#[test]
+#[serial]
+fn fill_uses_fill_intent_over_socket() {
+    let fixture = NativeAppFixture::new();
+
+    let install = run_apw(&fixture, &["--json", "app", "install"], &[]);
+    assert_eq!(install.status, 0, "{install:#?}");
+
+    let launch = run_apw(&fixture, &["--json", "app", "launch"], &[]);
+    assert_eq!(launch.status, 0, "{launch:#?}");
+    wait_for_socket_transport(&fixture);
+
+    let fill = run_apw(&fixture, &["--json", "fill", "https://example.com"], &[]);
+    assert_eq!(fill.status, 0, "{fill:#?}");
+    let payload = parse_success(&fill);
+    assert_eq!(payload["payload"]["intent"], "fill");
+    assert_eq!(payload["payload"]["domain"], "example.com");
+    assert_eq!(payload["payload"]["transport"], "unix_socket");
 }
 
 #[test]
@@ -513,6 +544,23 @@ fn login_works_via_direct_fallback_when_service_not_running() {
     assert_eq!(login.status, 0, "{login:#?}");
     let payload = parse_success(&login);
     assert_eq!(payload["payload"]["transport"], "direct_exec");
+    assert_eq!(payload["payload"]["intent"], "login");
+    assert_eq!(payload["payload"]["userMediated"], true);
+}
+
+#[test]
+#[serial]
+fn fill_works_via_direct_fallback_when_service_not_running() {
+    let fixture = NativeAppFixture::new();
+
+    let install = run_apw(&fixture, &["--json", "app", "install"], &[]);
+    assert_eq!(install.status, 0, "{install:#?}");
+
+    let fill = run_apw(&fixture, &["--json", "fill", "https://example.com"], &[]);
+    assert_eq!(fill.status, 0, "{fill:#?}");
+    let payload = parse_success(&fill);
+    assert_eq!(payload["payload"]["transport"], "direct_exec");
+    assert_eq!(payload["payload"]["intent"], "fill");
     assert_eq!(payload["payload"]["userMediated"], true);
 }
 
