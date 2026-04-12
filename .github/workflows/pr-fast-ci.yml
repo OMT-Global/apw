@@ -82,9 +82,7 @@ jobs:
 
   native-app-swift-tests:
     name: Native App Swift Tests
-    runs-on:
-      group: macOS-private
-      labels: macos-14
+    runs-on: macos-14
     timeout-minutes: 20
     needs: changes
     if: >-
